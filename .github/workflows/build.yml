@@ -121,6 +121,8 @@ jobs:
     steps:
       - name: Checkout builder repo
         uses: actions/checkout@v4
+        with:
+          path: builder
 
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
@@ -134,7 +136,7 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Load config
-        run: python3 scripts/load-config.py "${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
+        run: python3 ${{ github.workspace }}/builder/scripts/load-config.py "${{ github.workspace }}/builder/${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
 
       - name: Install system deps
         run: |
@@ -161,7 +163,7 @@ jobs:
       - name: Patch Flutter
         run: |
           cd $(dirname $(dirname $(which flutter)))
-          git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || true
+          git apply ${{ github.workspace }}/builder/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || true
 
       - uses: nttld/setup-ndk@v1
         id: setup-ndk
@@ -204,8 +206,8 @@ jobs:
           sed -i "s|https://admin.rustdesk.com|${{ env.CUSTOM_API_SERVER }}|" ./src/common.rs
 
           # Allow custom.txt
-          python3 ${{ github.workspace }}/.github/patches/allowCustom.py
-          git apply ${{ github.workspace }}/.github/patches/removeSetupServerTip.diff || true
+          python3 ${{ github.workspace }}/builder/.github/patches/allowCustom.py
+          git apply ${{ github.workspace }}/builder/.github/patches/removeSetupServerTip.diff || true
 
           # App name
           if [ "${{ env.CUSTOM_APPNAME }}" != "rustdesk" ] && [ "${{ env.CUSTOM_APPNAME }}" != "RustDesk" ]; then
@@ -228,12 +230,12 @@ jobs:
 
           # Hide CM
           if [ "${{ env.CUSTOM_HIDE_CM }}" == "true" ]; then
-            git apply ${{ github.workspace }}/.github/patches/hidecm.diff || true
+            git apply ${{ github.workspace }}/builder/.github/patches/hidecm.diff || true
           fi
 
           # X offline
           if [ "${{ env.CUSTOM_X_OFFLINE }}" == "true" ]; then
-            git apply ${{ github.workspace }}/.github/patches/xoffline.diff || true
+            git apply ${{ github.workspace }}/builder/.github/patches/xoffline.diff || true
           fi
 
           # Remove new version notification
@@ -314,6 +316,8 @@ jobs:
     steps:
       - name: Checkout builder repo
         uses: actions/checkout@v4
+        with:
+          path: builder
 
       - name: Export vcpkg cache variables
         uses: actions/github-script@v6
@@ -324,7 +328,7 @@ jobs:
 
       - name: Load config
         shell: bash
-        run: python3 scripts/load-config.py "${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
+        run: python3 ${{ github.workspace }}/builder/scripts/load-config.py "${{ github.workspace }}/builder/${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
 
       - name: Install ImageMagick
         run: |
@@ -361,7 +365,7 @@ jobs:
       - name: Patch Flutter
         shell: bash
         run: |
-          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff $(dirname $(dirname $(which flutter)))
+          cp ${{ github.workspace }}/builder/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff $(dirname $(dirname $(which flutter)))
           cd $(dirname $(dirname $(which flutter)))
           git apply flutter_3.24.4_dropdown_menu_enableFilter.diff || true
 
@@ -396,8 +400,8 @@ jobs:
           sed -i "s|rs-ny.rustdesk.com|${{ env.CUSTOM_SERVER }}|" ./libs/hbb_common/src/config.rs
           sed -i "s|OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=|${{ env.CUSTOM_KEY }}|" ./libs/hbb_common/src/config.rs
           sed -i "s|https://admin.rustdesk.com|${{ env.CUSTOM_API_SERVER }}|" ./src/common.rs
-          python3 .github/patches/allowCustom.py || python3 ${{ github.workspace }}/.github/patches/allowCustom.py
-          git apply .github/patches/removeSetupServerTip.diff || git apply ${{ github.workspace }}/.github/patches/removeSetupServerTip.diff || true
+          python3 ${{ github.workspace }}/builder/.github/patches/allowCustom.py
+          git apply ${{ github.workspace }}/builder/.github/patches/removeSetupServerTip.diff || true
           if [ "${{ env.CUSTOM_APPNAME }}" != "rustdesk" ] && [ "${{ env.CUSTOM_APPNAME }}" != "RustDesk" ]; then
             sed -i "s|description = \"RustDesk Remote Desktop\"|description = \"${{ env.CUSTOM_APPNAME }}\"|" ./Cargo.toml
             sed -i "s|ProductName = \"RustDesk\"|ProductName = \"${{ env.CUSTOM_APPNAME }}\"|" ./Cargo.toml
@@ -462,6 +466,8 @@ jobs:
     steps:
       - name: Checkout builder repo
         uses: actions/checkout@v4
+        with:
+          path: builder
 
       - name: Export vcpkg cache variables
         uses: actions/github-script@v6
@@ -471,7 +477,7 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Load config
-        run: python3 scripts/load-config.py "${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
+        run: python3 ${{ github.workspace }}/builder/scripts/load-config.py "${{ github.workspace }}/builder/${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
 
       - name: Free disk space
         run: |
@@ -520,7 +526,7 @@ jobs:
       - name: Patch Flutter
         run: |
           cd $(dirname $(dirname $(which flutter)))
-          git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || true
+          git apply ${{ github.workspace }}/builder/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || true
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
@@ -542,8 +548,8 @@ jobs:
           sed -i "s|rs-ny.rustdesk.com|${{ env.CUSTOM_SERVER }}|" ./libs/hbb_common/src/config.rs
           sed -i "s|OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=|${{ env.CUSTOM_KEY }}|" ./libs/hbb_common/src/config.rs
           sed -i "s|https://admin.rustdesk.com|${{ env.CUSTOM_API_SERVER }}|" ./src/common.rs
-          python3 ${{ github.workspace }}/.github/patches/allowCustom.py
-          git apply ${{ github.workspace }}/.github/patches/removeSetupServerTip.diff || true
+          python3 ${{ github.workspace }}/builder/.github/patches/allowCustom.py
+          git apply ${{ github.workspace }}/builder/.github/patches/removeSetupServerTip.diff || true
           if [ "${{ env.CUSTOM_APPNAME }}" != "rustdesk" ] && [ "${{ env.CUSTOM_APPNAME }}" != "RustDesk" ]; then
             find ./src/lang -name "*.rs" -exec sed -i "s|RustDesk|${{ env.CUSTOM_APPNAME }}|" {} \;
           fi
