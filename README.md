@@ -236,7 +236,7 @@ passwords), or keep a private build repo that publishes releases to a separate p
   repos.
 
 ## 11. Credits
-
+- Partner in Crime **[VenimK](https://github.com/venimk)**
 - Build logic adapted from **[bryangerlach/rdgen](https://github.com/bryangerlach/rdgen)**
 - Config generator: **[rdgen.crayoneater.org](https://rdgen.crayoneater.org/)**
 - Upstream app: **[rustdesk/rustdesk](https://github.com/rustdesk/rustdesk)**
