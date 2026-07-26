@@ -91,6 +91,19 @@ ds["allow-remove-wallpaper"] = "Y" if d.get("removeWallpaper", False) else "N"
 custom["default-settings"] = ds
 custom["override-settings"] = {}
 
+# Parse manual settings (skip empty lines)
+for line in (d.get("defaultManual", "") or "").splitlines():
+    line = line.strip()
+    if "=" in line:
+        k, value = line.split("=", 1)
+        custom["default-settings"][k.strip()] = value.strip()
+
+for line in (d.get("overrideManual", "") or "").splitlines():
+    line = line.strip()
+    if "=" in line:
+        k, value = line.split("=", 1)
+        custom["override-settings"][k.strip()] = value.strip()
+
 custom_json = json.dumps(custom)
 custom_b64 = base64.b64encode(custom_json.encode()).decode()
 

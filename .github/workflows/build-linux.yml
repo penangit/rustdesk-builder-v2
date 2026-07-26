@@ -1,0 +1,452 @@
+###############################################################################
+#  RustDesk Custom Client Builder — Linux only
+#  Config: configs/RustDesk.json
+#
+#  This workflow:
+#    1. Checks if a new RustDesk version exists upstream
+#    2. Generates flutter-rust-bridge files
+#    3. Builds Linux .deb + .rpm
+#    4. Publishes to GitHub Releases
+#    5. Updates the download page
+###############################################################################
+name: "🐧 Build Linux Client"
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      rustdesk_version:
+        description: "Version to build (e.g. 1.4.9). Blank = latest."
+        required: false
+        default: ""
+      force_build:
+        description: "Force build even if release exists"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+env:
+  RUST_VERSION: "1.75"
+  FLUTTER_VERSION: "3.24.5"
+  CARGO_EXPAND_VERSION: "1.0.95"
+  FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
+  BRIDGE_FLUTTER_VERSION: "3.22.3"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  CONFIG_PATH: configs/RustDesk.json
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  #  Detect version & decide whether to build
+  # ─────────────────────────────────────────────────────────────────
+  detect-version:
+    name: "🔍 Detect version"
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve version
+        id: resolve
+        run: |
+          MANUAL="${{ github.event.inputs.rustdesk_version }}"
+          FORCE="${{ github.event.inputs.force_build }}"
+
+          if [ -n "$MANUAL" ]; then
+            echo "version=$MANUAL" >> $GITHUB_OUTPUT
+            if [ "$FORCE" = "true" ]; then
+              echo "should_build=true" >> $GITHUB_OUTPUT
+            else
+              if gh release view "v${MANUAL}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+                echo "::notice::Release v${MANUAL} already exists. Use force_build to rebuild."
+                echo "should_build=false" >> $GITHUB_OUTPUT
+              else
+                echo "should_build=true" >> $GITHUB_OUTPUT
+              fi
+            fi
+            exit 0
+          fi
+
+          LATEST=$(curl -sf "https://api.github.com/repos/rustdesk/rustdesk/releases/latest" \
+            | jq -r '.tag_name // empty' | sed 's/^v//')
+
+          if [ -z "$LATEST" ]; then
+            LATEST=$(curl -sf "https://api.github.com/repos/rustdesk/rustdesk/tags?per_page=1" \
+              | jq -r '.[0].name // empty' | sed 's/^v//')
+          fi
+
+          if [ -z "$LATEST" ]; then
+            echo "::error::Could not determine latest RustDesk version"
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "::notice::Latest upstream version: $LATEST"
+
+          if gh release view "v${LATEST}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "::notice::Already built v${LATEST} — skipping"
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "::notice::New version v${LATEST} — will build"
+            echo "version=$LATEST" >> $GITHUB_OUTPUT
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─────────────────────────────────────────────────────────────────
+  #  Generate flutter-rust-bridge
+  # ─────────────────────────────────────────────────────────────────
+  generate-bridge:
+    name: "🌉 Generate bridge"
+    needs: detect-version
+    if: needs.detect-version.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - name: Checkout RustDesk source
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: refs/tags/${{ env.VERSION }}
+          submodules: recursive
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            clang cmake curl gcc git g++ libclang-dev \
+            libgtk-3-dev llvm-dev nasm ninja-build pkg-config wget
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: bridge
+
+      - name: Install Flutter (bridge version)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.BRIDGE_FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install bridge codegen
+        run: |
+          cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
+          cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
+          pushd flutter
+          sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' pubspec.yaml
+          flutter pub get
+          popd
+
+      - name: Run flutter_rust_bridge_codegen
+        run: |
+          ~/.cargo/bin/flutter_rust_bridge_codegen \
+            --rust-input ./src/flutter_ffi.rs \
+            --dart-output ./flutter/lib/generated_bridge.dart \
+            --c-output ./flutter/macos/Runner/bridge_generated.h
+          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+
+      - name: Upload bridge artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-artifact
+          path: |
+            ./src/bridge_generated.rs
+            ./src/bridge_generated.io.rs
+            ./flutter/lib/generated_bridge.dart
+            ./flutter/lib/generated_bridge.freezed.dart
+            ./flutter/macos/Runner/bridge_generated.h
+            ./flutter/ios/Runner/bridge_generated.h
+
+  # ─────────────────────────────────────────────────────────────────
+  #  Build Linux
+  # ─────────────────────────────────────────────────────────────────
+  build-linux:
+    name: "🐧 Build Linux x86_64"
+    needs: [detect-version, generate-bridge]
+    if: needs.detect-version.outputs.should_build == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      # ── Checkout OUR repo to builder/ so patches survive ──
+      - name: Checkout builder repo
+        uses: actions/checkout@v4
+        with:
+          path: builder
+
+      - name: Export vcpkg cache variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Load config
+        run: python3 builder/scripts/load-config.py "builder/${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+
+      - name: Set swap space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 12
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            clang cmake curl gcc git g++ imagemagick nasm ninja-build \
+            libayatana-appindicator3-dev libasound2-dev libclang-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgtk-3-dev libpam0g-dev libpulse-dev libva-dev libvdpau-dev \
+            libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxdo-dev libxfixes-dev llvm-dev pkg-config rpm tree wget
+
+      # ── Checkout RustDesk source to a SEPARATE path ──
+      - name: Checkout RustDesk source
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: refs/tags/${{ env.VERSION }}
+          submodules: recursive
+          path: rustdesk
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-artifact
+          path: ./rustdesk/
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "linux"
+          workspaces: "rustdesk -> target"
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2.12.0
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch Flutter dropdown
+        run: |
+          FLUTTER_DIR=$(dirname $(dirname $(which flutter)))
+          cp builder/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_DIR/"
+          cd "$FLUTTER_DIR"
+          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff || echo "Flutter patch already applied or N/A"
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg deps
+        run: |
+          $VCPKG_ROOT/vcpkg install --triplet x64-linux --x-install-root="$VCPKG_ROOT/installed" || true
+
+      - name: Disable staticlib (Linux only)
+        working-directory: rustdesk
+        run: |
+          sed -i 's/\["cdylib", "staticlib", "rlib"\]/\["cdylib"\]/g' Cargo.toml
+
+      # ── Apply all customizations ──
+      - name: Apply customizations
+        working-directory: rustdesk
+        run: |
+          echo "::group::Server + Key + API"
+          sed -i "s|rs-ny.rustdesk.com|${{ env.CUSTOM_SERVER }}|" ./libs/hbb_common/src/config.rs 2>/dev/null || true
+          sed -i "s|OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=|${{ env.CUSTOM_KEY }}|" ./libs/hbb_common/src/config.rs 2>/dev/null || true
+          sed -i "s|https://admin.rustdesk.com|${{ env.CUSTOM_API_SERVER }}|" ./src/common.rs
+          echo "::endgroup::"
+
+          echo "::group::Allow custom.txt (bypass signature check)"
+          python3 ../builder/.github/patches/allowCustom.py
+          git apply ../builder/.github/patches/removeSetupServerTip.diff || echo "removeSetupServerTip patch N/A"
+          echo "::endgroup::"
+
+          echo "::group::App name"
+          if [ "${{ env.CUSTOM_APPNAME }}" != "rustdesk" ] && [ "${{ env.CUSTOM_APPNAME }}" != "RustDesk" ]; then
+            find ./src/lang -name "*.rs" -exec sed -i "s|RustDesk|${{ env.CUSTOM_APPNAME }}|" {} \;
+            sed -i "s|description = \"RustDesk Remote Desktop\"|description = \"${{ env.CUSTOM_APPNAME }}\"|" ./Cargo.toml || true
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Company name"
+          if [ -n "${{ env.CUSTOM_COMPNAME }}" ] && [ "${{ env.CUSTOM_COMPNAME }}" != "Purslane Ltd" ]; then
+            sed -i "s|Purslane Tech Pte. Ltd.|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs \
+              ./flutter/lib/desktop/pages/desktop_setting_page.dart 2>/dev/null || true
+            sed -i "s|Purslane Ltd|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs \
+              ./flutter/lib/desktop/pages/desktop_setting_page.dart 2>/dev/null || true
+            find ./src/lang -name "*.rs" -exec sed -i '/powered_by_me/s|RustDesk|${{ env.CUSTOM_COMPNAME }}|g' {} \; 2>/dev/null || true
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Feature flags"
+          [ "${{ env.CUSTOM_DELAY_FIX }}" == "true" ] && sed -i 's|!key.is_empty()|false|' ./src/client.rs && echo "  delay fix applied" || true
+          [ "${{ env.CUSTOM_X_OFFLINE }}" == "true" ] && git apply ../builder/.github/patches/xoffline.diff && echo "  xOffline applied" || true
+          [ "${{ env.CUSTOM_HIDE_CM }}" == "true" ] && git apply ../builder/.github/patches/hidecm.diff && echo "  hidecm applied" || true
+          if [ "${{ env.CUSTOM_REMOVE_NEW_VERSION_NOTIF }}" == "true" ]; then
+            sed -i 's|updateUrl.isNotEmpty|false|' ./flutter/lib/desktop/pages/desktop_home_page.dart
+            echo "  removeNewVersionNotif applied"
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Fix flutter_gpu_texture_renderer"
+          sed -i -e 's|2ded7f146437a761ffe6981e2f742038f85ca68d|08a471bb8ceccdd50483c81cdfa8b81b07b14b87|' ./flutter/pubspec.lock 2>/dev/null || true
+          sed -i -e 's|2ded7f146437a761ffe6981e2f742038f85ca68d|08a471bb8ceccdd50483c81cdfa8b81b07b14b87|' ./flutter/pubspec.yaml 2>/dev/null || true
+          echo "::endgroup::"
+
+          echo "::group::URL links"
+          if [ -n "${{ env.CUSTOM_URL_LINK }}" ] && [ "${{ env.CUSTOM_URL_LINK }}" != "https://rustdesk.com" ]; then
+            sed -i "s|https://rustdesk.com|${{ env.CUSTOM_URL_LINK }}|g" ./flutter/lib/common.dart \
+              ./flutter/lib/desktop/pages/desktop_setting_page.dart \
+              ./flutter/lib/mobile/pages/settings_page.dart 2>/dev/null || true
+          fi
+          if [ -n "${{ env.CUSTOM_DOWNLOAD_LINK }}" ] && [ "${{ env.CUSTOM_DOWNLOAD_LINK }}" != "https://rustdesk.com/download" ]; then
+            sed -i "s|https://rustdesk.com/download|${{ env.CUSTOM_DOWNLOAD_LINK }}|g" \
+              ./flutter/lib/desktop/pages/desktop_home_page.dart \
+              ./flutter/lib/mobile/pages/connection_page.dart 2>/dev/null || true
+          fi
+          echo "::endgroup::"
+
+      # ── Build ──
+      - name: Build Rust library
+        working-directory: rustdesk
+        run: |
+          export CARGO_INCREMENTAL=0
+          cargo build --lib --features hwcodec,flutter,unix-file-copy-paste --release
+
+      - name: Build Flutter + package
+        working-directory: rustdesk
+        run: |
+          export DEB_ARCH=amd64
+
+          echo -n '${{ env.CUSTOM_TXT }}' > ./custom_.txt
+          mkdir -p flutter/assets
+          cp ./custom_.txt ./flutter/assets/custom_.txt
+          mkdir -p flutter/tmpdeb/usr/share/rustdesk
+          cp ./custom_.txt ./flutter/tmpdeb/usr/share/rustdesk/custom_.txt
+
+          python3 ./build.py --flutter --skip-cargo
+
+      - name: Collect outputs
+        working-directory: rustdesk
+        run: |
+          mkdir -p output
+
+          for f in *.deb; do
+            [ -f "$f" ] && mv "$f" "output/${{ env.CUSTOM_FILENAME }}-x86_64.deb" && echo "✅ DEB: $f"
+          done
+
+          HBB=$(pwd) rpmbuild ./res/rpm-flutter.spec -bb 2>&1 || echo "⚠️ RPM build failed (non-fatal)"
+          for f in ~/rpmbuild/RPMS/x86_64/*.rpm; do
+            [ -f "$f" ] && mv "$f" "output/${{ env.CUSTOM_FILENAME }}-x86_64.rpm" && echo "✅ RPM: $f"
+          done
+
+          echo ""
+          echo "=== Output files ==="
+          ls -lh output/ || echo "❌ No output files!"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-${{ env.VERSION }}
+          path: ./rustdesk/output/*
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────
+  #  Create GitHub Release
+  # ─────────────────────────────────────────────────────────────────
+  create-release:
+    name: "📦 Release"
+    needs: [detect-version, build-linux]
+    if: |
+      always() &&
+      needs.detect-version.outputs.should_build == 'true' &&
+      needs.build-linux.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: false
+      - name: Flatten assets
+        run: |
+          mkdir -p final-assets
+          find release-assets -type f \( -name "*.deb" -o -name "*.rpm" \) -exec cp {} final-assets/ \;
+          echo "=== Release assets ==="
+          ls -lh final-assets/
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ env.VERSION }}"
+          name: "RustDesk v${{ env.VERSION }} — Custom Build"
+          body: |
+            ## RustDesk Custom Client v${{ env.VERSION }}
+            Pre-configured for `ir.remote-neo.com`
+            | Platform | Status |
+            |----------|--------|
+            | 🐧 Linux x86_64 | ✅ |
+            | 🪟 Windows | ⏳ Coming soon |
+            | 🤖 Android | ⏳ Coming soon |
+          files: final-assets/*
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─────────────────────────────────────────────────────────────────
+  #  Update download page
+  # ─────────────────────────────────────────────────────────────────
+  update-pages:
+    name: "🌐 Update download page"
+    needs: [detect-version, create-release]
+    if: needs.create-release.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Update versions list
+        run: |
+          echo "${{ env.VERSION }}" >> docs/versions.txt
+          sort -Vru docs/versions.txt -o docs/versions.txt
+          cat docs/versions.txt
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/versions.txt
+          git diff --cached --quiet || git commit -m "📦 Built v${{ env.VERSION }} (Linux)"
+          git push
