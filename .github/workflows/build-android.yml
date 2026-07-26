@@ -154,8 +154,6 @@ jobs:
           - { arch: aarch64, target: aarch64-linux-android,     android_target: arm64-v8a,   flutter_target: android-arm64, abi_dir: arm64-v8a,   ndk: ndk_arm64.sh, jni: aarch64-linux-android }
           - { arch: armv7,   target: armv7-linux-androideabi,    android_target: armeabi-v7a, flutter_target: android-arm,   abi_dir: armeabi-v7a, ndk: ndk_arm.sh,   jni: arm-linux-androideabi }
           - { arch: x86_64,  target: x86_64-linux-android,       android_target: x86_64,      flutter_target: android-x64,   abi_dir: x86_64,      ndk: ndk_x64.sh,   jni: x86_64-linux-android }
-          # Universal APK — one file that works on any Android device (all 3 ABIs bundled). Bigger, but no arch guessing.
-          - { arch: universal, target: universal-all, universal: true }
     env:
       VERSION: ${{ needs.detect-version.outputs.version }}
     steps:
@@ -249,19 +247,12 @@ jobs:
       - name: Install vcpkg dependencies (android)
         shell: bash
         run: |
-          if [ "${{ matrix.job.universal }}" = "true" ]; then
-            TARGETS="arm64-v8a armeabi-v7a x86_64"
-          else
-            TARGETS="${{ matrix.job.android_target }}"
+          if ! ./flutter/build_android_deps.sh "${{ matrix.job.android_target }}"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"; echo "======"; cat "$_1"; echo "======"; echo ""
+            done
+            exit 1
           fi
-          for T in $TARGETS; do
-            if ! ./flutter/build_android_deps.sh "$T"; then
-              find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
-                echo "$_1:"; echo "======"; cat "$_1"; echo "======"; echo ""
-              done
-              exit 1
-            fi
-          done
 
       - name: Restore bridge files
         uses: actions/download-artifact@v4
@@ -402,22 +393,11 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
+          rustup target add ${{ matrix.job.target }}
           cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
-          if [ "${{ matrix.job.universal }}" = "true" ]; then
-            for t in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android; do rustup target add "$t"; done
-            ./flutter/ndk_arm64.sh
-            ./flutter/ndk_arm.sh
-            ./flutter/ndk_x64.sh
-            mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a ./flutter/android/app/src/main/jniLibs/armeabi-v7a ./flutter/android/app/src/main/jniLibs/x86_64
-            cp ./target/aarch64-linux-android/release/liblibrustdesk.so   ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
-            cp ./target/armv7-linux-androideabi/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
-            cp ./target/x86_64-linux-android/release/liblibrustdesk.so    ./flutter/android/app/src/main/jniLibs/x86_64/librustdesk.so
-          else
-            rustup target add ${{ matrix.job.target }}
-            ./flutter/${{ matrix.job.ndk }}
-            mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}
-            cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}/librustdesk.so
-          fi
+          ./flutter/${{ matrix.job.ndk }}
+          mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}
+          cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}/librustdesk.so
 
       # ── build the flutter APK (embeds custom_.txt) ──
       - name: Build APK
@@ -432,30 +412,24 @@ jobs:
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
           # baked config (password + permissions + approve-mode) as a bundled asset
           echo -n '${{ env.CUSTOM_B64 }}' > ./flutter/assets/custom_.txt
-          NDK_LIB=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib
-          if [ "${{ matrix.job.universal }}" = "true" ]; then
-            # libc++_shared for every ABI (librustdesk.so already placed in the lib step)
-            cp "$NDK_LIB/aarch64-linux-android/libc++_shared.so" ./flutter/android/app/src/main/jniLibs/arm64-v8a/
-            cp "$NDK_LIB/arm-linux-androideabi/libc++_shared.so" ./flutter/android/app/src/main/jniLibs/armeabi-v7a/
-            cp "$NDK_LIB/x86_64-linux-android/libc++_shared.so"  ./flutter/android/app/src/main/jniLibs/x86_64/
-            pushd flutter
-            flutter build apk --release
-            popd
-            mkdir -p signed-apk
-            mv ./flutter/build/app/outputs/flutter-apk/app-release.apk \
-               ./signed-apk/${{ env.filename }}-${{ env.VERSION }}-universal.apk
-          else
-            # native runtime libs
-            mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}
-            cp "$NDK_LIB/${{ matrix.job.jni }}/libc++_shared.so" ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}/
-            cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}/librustdesk.so
-            pushd flutter
-            flutter build apk --release --target-platform ${{ matrix.job.flutter_target }} --split-per-abi
-            popd
-            mkdir -p signed-apk
-            mv ./flutter/build/app/outputs/flutter-apk/app-${{ matrix.job.abi_dir }}-release.apk \
-               ./signed-apk/${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
-          fi
+          # native runtime libs
+          mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}
+          cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.job.jni }}/libc++_shared.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}/
+          cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}/librustdesk.so
+          pushd flutter
+          flutter build apk --release --target-platform ${{ matrix.job.flutter_target }} --split-per-abi
+          popd
+          mkdir -p signed-apk
+          mv ./flutter/build/app/outputs/flutter-apk/app-${{ matrix.job.abi_dir }}-release.apk \
+             ./signed-apk/${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
+
+      # Upload the compiled native libs so the universal job can reuse them (no rebuild)
+      - name: Upload jniLibs (for universal reuse)
+        uses: actions/upload-artifact@v4
+        with:
+          name: jnilibs-${{ matrix.job.arch }}
+          path: ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}/
+          retention-days: 1
 
       # ── sign with YOUR keystore ──
       - uses: r0adkll/sign-android-release@v1
@@ -492,9 +466,172 @@ jobs:
           retention-days: 30
 
   # ─────────────────────────────────────────────────────────────────
+  # Universal APK — one file that runs on any Android device (all 3 ABIs).
+  # Reuses the .so compiled by the per-arch jobs, so NO rust/vcpkg rebuild
+  # (that's what broke the old approach). Just a flutter build with no --split.
+  # ─────────────────────────────────────────────────────────────────
+  build-universal-android:
+    needs: [detect-version, generate-bridge, build-rustdesk-android]
+    if: needs.detect-version.outputs.should_build == 'true' && needs.build-rustdesk-android.result == 'success'
+    name: "🤖 APK universal"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - name: Checkout RustDesk source
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: refs/tags/${{ env.VERSION }}
+          submodules: recursive
+
+      - name: Checkout builder repo
+        uses: actions/checkout@v4
+        with:
+          path: builder
+
+      - name: Load config
+        run: python3 builder/scripts/load-config.py "builder/${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
+
+      - name: Map config → build env
+        run: |
+          echo "appname=${{ env.CUSTOM_APPNAME }}" >> $GITHUB_ENV
+          echo "filename=${{ env.CUSTOM_FILENAME }}" >> $GITHUB_ENV
+          echo "urlLink=${{ env.CUSTOM_URL_LINK }}" >> $GITHUB_ENV
+          echo "downloadLink=${{ env.CUSTOM_DOWNLOAD_LINK }}" >> $GITHUB_ENV
+          echo "androidappid=${{ env.CUSTOM_ANDROID_APP_ID }}" >> $GITHUB_ENV
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openjdk-17-jdk-headless imagemagick file tree
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.ANDROID_FLUTTER_VERSION }}
+
+      - name: Patch flutter
+        continue-on-error: true
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          [[ "3.24.5" == "${{ env.ANDROID_FLUTTER_VERSION }}" ]] && git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || echo "flutter patch N/A"
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-artifact
+          path: ./
+
+      # ── flutter/dart-level customizations only (server/key/etc. are already compiled into the reused .so) ──
+      - name: Change appname to custom (skipped for stock rustdesk/RustDesk)
+        if: env.appname != 'RustDesk' && env.appname != ''
+        run: |
+          sed -i -e 's|RustDesk|${{ env.appname }}|' ./flutter/android/app/src/main/res/values/strings.xml
+          sed -i -e "s|title: 'RustDesk'|title: '${{ env.appname }}'|" ./flutter/lib/main.dart
+          sed -i 's|android:label="RustDesk"|android:label="${{ env.appname }}"|' ./flutter/android/app/src/main/AndroidManifest.xml
+          sed -i 's|android:label="RustDesk Input"|android:label="${{ env.appname }} Input"|' ./flutter/android/app/src/main/AndroidManifest.xml
+          sed -i 's|RustDesk is Open|${{ env.appname }} is Open|' ./flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/BootReceiver.kt
+          sed -i 's|Show Rustdesk|Show ${{ env.appname }}|' ./flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/FloatingWindowService.kt
+          sed -i 's|"RustDesk"|"${{ env.appname }}"|' ./flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainService.kt
+          sed -i 's|"RustDesk Service|"${{ env.appname }} Service|' ./flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainService.kt
+          sed -i 's|RustDesk|${{ env.appname }}|' ./flutter/lib/main.dart
+
+      - name: Change url to custom
+        continue-on-error: true
+        run: |
+          sed -i -e "s|launchUrl(Uri.parse('https://rustdesk.com'));|launchUrl(Uri.parse('${{ env.urlLink }}'));|" ./flutter/lib/common.dart
+          sed -i -e "s|const url = 'https://rustdesk.com/';|const url = '${{ env.urlLink }}';|" ./flutter/lib/mobile/pages/settings_page.dart
+          sed -i -e "s|child: Text('rustdesk.com',|child: Text('${{ env.urlLink }}',|" ./flutter/lib/mobile/pages/settings_page.dart
+
+      - name: Change android app id to custom
+        if: env.androidappid != ''
+        run: sed -i -e 's|com.carriez.flutter_hbb|${{ env.androidappid }}|' ./flutter/android/app/build.gradle
+
+      - name: Change download link to custom
+        continue-on-error: true
+        run: sed -i -e 's|https://rustdesk.com/download|${{ env.downloadLink }}|' ./flutter/lib/mobile/pages/connection_page.dart
+
+      - name: Embed custom config for Android
+        run: |
+          KOTLIN=./flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainService.kt
+          DART=./flutter/lib/models/native_model.dart
+          sed -i "s|FFI.startServer(configPath, \"\")|FFI.startServer(configPath, \"${{ env.CUSTOM_B64 }}\")|" "$KOTLIN"
+          sed -i "s|customClientConfig: '',|customClientConfig: '${{ env.CUSTOM_B64 }}',|" "$DART"
+
+      - name: Remove scam alert on Android
+        run: sed -i 's/bind.mainGetLocalOption(key:\s*"show-scam-warning")/"N"/g' ./flutter/lib/mobile/pages/server_page.dart
+
+      # ── reuse the per-arch native libs (this is the whole point — no rebuild) ──
+      - name: Download prebuilt native libs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: jnilibs-*
+          path: jnilibs
+
+      - name: Place native libs into jniLibs
+        run: |
+          J=./flutter/android/app/src/main/jniLibs
+          mkdir -p "$J/arm64-v8a" "$J/armeabi-v7a" "$J/x86_64"
+          cp -v jnilibs/jnilibs-aarch64/* "$J/arm64-v8a/"
+          cp -v jnilibs/jnilibs-armv7/*   "$J/armeabi-v7a/"
+          cp -v jnilibs/jnilibs-x86_64/*  "$J/x86_64/"
+          echo "=== jniLibs contents ==="; find "$J" -type f
+
+      - name: Build universal APK
+        shell: bash
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+        run: |
+          export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
+          sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+          echo -n '${{ env.CUSTOM_B64 }}' > ./flutter/assets/custom_.txt
+          pushd flutter
+          flutter build apk --release            # no --split-per-abi → one APK, all ABIs
+          popd
+          mkdir -p signed-apk
+          mv ./flutter/build/app/outputs/flutter-apk/app-release.apk \
+             ./signed-apk/${{ env.filename }}-${{ env.VERSION }}-universal.apk
+
+      - uses: r0adkll/sign-android-release@v1
+        name: Sign APK
+        id: sign
+        if: env.ANDROID_SIGNING_KEY != ''
+        with:
+          releaseDirectory: ./signed-apk
+          signingKeyBase64: ${{ secrets.ANDROID_SIGNING_KEY }}
+          alias: ${{ secrets.ANDROID_ALIAS }}
+          keyStorePassword: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        env:
+          BUILD_TOOLS_VERSION: "34.0.0"
+
+      - name: Finalize signed APK
+        shell: bash
+        run: |
+          mkdir -p out
+          SIGNED="${{ steps.sign.outputs.signedReleaseFile }}"
+          if [ -n "$SIGNED" ] && [ -f "$SIGNED" ]; then
+            cp "$SIGNED" "out/${{ env.filename }}-${{ env.VERSION }}-universal.apk"
+          else
+            cp "./signed-apk/${{ env.filename }}-${{ env.VERSION }}-universal.apk" "out/" || true
+          fi
+          ls -lh out/
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-universal
+          path: out/${{ env.filename }}-${{ env.VERSION }}-universal.apk
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────
   create-release:
     name: "📦 Release"
-    needs: [detect-version, build-rustdesk-android]
+    needs: [detect-version, build-rustdesk-android, build-universal-android]
     if: |
       always() &&
       needs.detect-version.outputs.should_build == 'true' &&
