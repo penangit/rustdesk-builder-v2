@@ -292,7 +292,8 @@
       { label: '32-bit', sub: 'MSI · installer', icon: 'windows', tip: 'Installer for old 32-bit Windows.', match: n => /i686.*\.msi$/i.test(n) },
     ]},
     { name: 'Android', icon: 'android', items: [
-      { label: 'arm64',      sub: 'aarch64 · APK', icon: 'android', tip: 'Almost all phones & tablets from recent years. Pick this one.', match: n => /aarch64.*\.apk$/i.test(n) },
+      { label: 'Universal',  sub: 'any device · APK', icon: 'android', tip: 'Works on any Android phone or tablet — choose this if unsure. Larger file (every architecture bundled in one APK).', match: n => /universal.*\.apk$/i.test(n) },
+      { label: 'arm64',      sub: 'aarch64 · APK', icon: 'android', tip: 'Smaller build for 64-bit ARM (almost all phones & tablets from recent years).', match: n => /aarch64.*\.apk$/i.test(n) },
       { label: 'arm 32-bit', sub: 'armv7 · APK',   icon: 'android', tip: 'Older 32-bit ARM phones/tablets.', match: n => /armv7.*\.apk$/i.test(n) },
       { label: 'x86_64',     sub: 'APK',           icon: 'android', tip: 'Rare — Intel/AMD Android devices, emulators, some Chromebooks.', match: n => /x86_64.*\.apk$/i.test(n) },
     ]},
