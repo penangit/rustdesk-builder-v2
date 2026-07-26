@@ -21,6 +21,7 @@
 #     too); a partial release is expected until each is dialed in.
 ###############################################################################
 name: "🐧 Build Linux"
+run-name: "🐧 Linux · ${{ github.event.inputs.rustdesk_version || 'latest' }}"
 
 on:
   workflow_dispatch:
@@ -305,7 +306,7 @@ jobs:
           python3 allowCustom.py
           wget -q https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/removeSetupServerTip.diff
           git apply removeSetupServerTip.diff || echo "removeSetupServerTip N/A"
-          echo -n '${{ env.CUSTOM_TXT }}' > ./custom_.txt
+          echo -n '${{ env.CUSTOM_B64 }}' > ./custom_.txt
 
       - name: Change company name
         if: env.compname != 'Purslane Ltd'
@@ -723,25 +724,47 @@ jobs:
             -exec cp {} final-assets/ \;
           echo "=== Release assets ==="
           ls -lh final-assets/
-      - name: Build release notes (mirror upstream changelog)
+      - name: Build release notes (changelog section only)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VER="${{ env.VERSION }}"
-          # RustDesk tags are usually unprefixed ("1.4.9"); try both.
-          BODY=$(curl -sf "https://api.github.com/repos/rustdesk/rustdesk/releases/tags/${VER}" | jq -r '.body // empty')
-          [ -z "$BODY" ] && BODY=$(curl -sf "https://api.github.com/repos/rustdesk/rustdesk/releases/tags/v${VER}" | jq -r '.body // empty')
-          {
-            echo "Custom **RustDesk** build — connects to \`ir.remote-neo.com\` with password + click approval."
-            echo ""
-            echo "Built from the official RustDesk \`${VER}\` source with the server and config baked in. All platforms/variants: see the [download page](https://penangit.github.io/rustdesk-builder-v2/)."
-            echo ""
-            echo "---"
-            echo ""
-            echo "## Changelog — RustDesk ${VER}"
-            echo ""
-            if [ -n "$BODY" ]; then printf '%s\n' "$BODY"; else echo "_Upstream changelog unavailable._"; fi
-            echo ""
-            echo "> Changelog mirrored from [rustdesk/rustdesk](https://github.com/rustdesk/rustdesk/releases/tag/${VER})."
-          } > RELEASE_NOTES.md
+          python3 - "${{ env.VERSION }}" > RELEASE_NOTES.md << 'PYEOF'
+          import sys, os, json, re, urllib.request
+          ver = sys.argv[1]
+          hdr = {"Accept": "application/vnd.github+json", "User-Agent": "rd-builder"}
+          tok = os.environ.get("GH_TOKEN", "")
+          if tok:
+              hdr["Authorization"] = "Bearer " + tok
+          body = ""
+          for tag in (ver, "v" + ver):   # RustDesk tags are usually unprefixed
+              try:
+                  req = urllib.request.Request(
+                      "https://api.github.com/repos/rustdesk/rustdesk/releases/tags/" + tag,
+                      headers=hdr)
+                  body = (json.load(urllib.request.urlopen(req, timeout=20)).get("body") or "")
+                  if body:
+                      break
+              except Exception:
+                  pass
+          # Keep ONLY the changelog — drop the download table that links to
+          # rustdesk's own binaries, the shield badges, and the promo lines.
+          m = re.search(r"<summary>\s*Changelog\s*</summary>(.*?)</details>", body, re.S | re.I)
+          if m:
+              cl = m.group(1).strip()
+          else:
+              m2 = re.search(r"(?:^|\n)#{0,6}\s*Changelog\s*\n(.*)$", body, re.S | re.I)
+              cl = re.sub(r"</?(?:details|summary)[^>]*>", "", m2.group(1)).strip() if m2 else ""
+          parts = [
+              "Custom **RustDesk** build — connects to `ir.remote-neo.com` with password + click approval.\n",
+              "Built from the official RustDesk `%s` source with the server + config baked in. "
+              "All variants: [download page](https://penangit.github.io/rustdesk-builder-v2/).\n" % ver,
+              "---\n",
+              "## Changelog — RustDesk %s\n" % ver,
+              cl if cl else "_Upstream changelog unavailable._",
+              "\n> Mirrored from [rustdesk/rustdesk](https://github.com/rustdesk/rustdesk/releases/tag/%s)." % ver,
+          ]
+          print("\n".join(parts))
+          PYEOF
           echo "=== release notes ==="; cat RELEASE_NOTES.md
       # Same notes on every platform workflow → safe to overwrite (idempotent).
       - name: Add Linux builds to release
