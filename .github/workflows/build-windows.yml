@@ -13,7 +13,7 @@
 #  ...-x86_64.exe / ...-x86_64.msi so the download page can tell them apart
 #  from a future ...-i686.* 32-bit build.
 ###############################################################################
-name: "🪟 Build Windows Client (x64)"
+name: "🪟 Build Windows (64-bit)"
 
 on:
   workflow_dispatch:
@@ -366,7 +366,7 @@ jobs:
           python3 ./generate.py -f ../../rustdesk/ -o . -e "../../rustdesk/rustdesk.exe"
           popd
           mkdir -p ./SignOutput
-          mv ./target/release/rustdesk-portable-packer.exe "./SignOutput/${{ env.CUSTOM_FILENAME }}-x86_64.exe"
+          mv ./target/release/rustdesk-portable-packer.exe "./SignOutput/${{ env.CUSTOM_FILENAME }}-${{ env.VERSION }}-x86_64.exe"
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
@@ -381,7 +381,7 @@ jobs:
           python preprocess.py --app-name "$appNs" --arp -d ../../rustdesk
           nuget restore msi.sln
           msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
-          Copy-Item ./Package/bin/x64/Release/en-us/Package.msi "../../SignOutput/${{ env.CUSTOM_FILENAME }}-x86_64.msi"
+          Copy-Item ./Package/bin/x64/Release/en-us/Package.msi "../../SignOutput/${{ env.CUSTOM_FILENAME }}-${{ env.VERSION }}-x86_64.msi"
           popd
 
       - name: List outputs
