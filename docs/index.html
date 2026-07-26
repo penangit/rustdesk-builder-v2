@@ -1,441 +1,558 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RustDesk — Neo+ Remote</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RustDesk — Neo⁺ Remote</title>
 <style>
-  :root {
-    --bg:        #0c0e12;
-    --surface:   #151921;
-    --surface-2: #1a2029;
-    --border:    #1f2937;
-    --text:      #e2e8f0;
-    --muted:     #8896ab;
-    --accent:    #3b82f6;
-    --accent-h:  #60a5fa;
-    --green:     #22c55e;
+  /* ============================ THEME TOKENS ============================ */
+  :root, [data-theme="dark"] {
+    --bg:        #0b0e14;
+    --bg-grad:   radial-gradient(1200px 600px at 50% -10%, #131a26 0%, #0b0e14 60%);
+    --surface:   #121722;
+    --surface-2: #1a212e;
+    --card:      #10151f;
+    --border:    #232c3b;
+    --border-2:  #2c384b;
+    --text:      #e6ebf4;
+    --muted:     #8a97ab;
+    --faint:     #5b6675;
+    --accent:    #4c8dff;
+    --accent-2:  #6aa4ff;
     --amber:     #f59e0b;
-    --red:       #ef4444;
-    --radius:    10px;
+    --amber-2:   #fbbf24;
+    --green:     #35d07f;
+    --btn-bg:    #151b27;
+    --btn-hover: #1c2432;
+    --tip-bg:    #1c2433;
+    --shadow:    0 10px 40px rgba(0,0,0,.45);
   }
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  [data-theme="light"] {
+    --bg:        #f4f6fb;
+    --bg-grad:   radial-gradient(1200px 600px at 50% -10%, #e7edf8 0%, #f4f6fb 55%);
+    --surface:   #ffffff;
+    --surface-2: #eef2f9;
+    --card:      #ffffff;
+    --border:    #e2e8f2;
+    --border-2:  #d3dbe8;
+    --text:      #1a2230;
+    --muted:     #5c6a7f;
+    --faint:     #94a1b5;
+    --accent:    #2f6fed;
+    --accent-2:  #2560d8;
+    --amber:     #b26a00;
+    --amber-2:   #92560a;
+    --green:     #129a5a;
+    --btn-bg:    #f7f9fd;
+    --btn-hover: #eef3fb;
+    --tip-bg:    #222c3b;
+    --shadow:    0 10px 30px rgba(60,80,120,.14);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
   body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background: var(--bg);
+    background-image: var(--bg-grad);
+    background-attachment: fixed;
     color: var(--text);
-    line-height: 1.6;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
     min-height: 100vh;
   }
   a { color: var(--accent); text-decoration: none; }
-  a:hover { color: var(--accent-h); }
+  a:hover { text-decoration: underline; }
 
-  /* ── Header ── */
-  .header {
-    border-bottom: 1px solid var(--border);
-    padding: 2rem 1.5rem 1.5rem;
-    text-align: center;
-  }
-  .header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.25rem; }
-  .header h1 span { color: var(--accent); }
-  .header p { color: var(--muted); font-size: 0.875rem; }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 0 20px; }
 
-  /* ── Server badge ── */
-  .server-badge {
-    display: inline-flex; align-items: center; gap: 0.5rem;
+  /* ============================ HEADER ============================ */
+  header { padding: 34px 0 20px; text-align: center; position: relative; }
+  .brand { display: inline-flex; align-items: center; gap: 11px; font-size: 1.7rem; font-weight: 700; letter-spacing: -.01em; }
+  .brand .logo { width: 30px; height: 30px; color: var(--accent); }
+  .brand .rd { color: var(--accent); }
+  .subtitle { color: var(--muted); font-size: .92rem; margin-top: 8px; }
+  .headmeta { margin-top: 16px; display: flex; align-items: center; justify-content: center; gap: 10px; }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 8px;
     background: var(--surface); border: 1px solid var(--border);
-    border-radius: 999px; padding: 0.35rem 1rem;
-    font-size: 0.8rem; color: var(--muted); margin-top: 0.75rem;
+    padding: 6px 13px; border-radius: 999px; font-size: .82rem; color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
-  .server-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
-  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 22%, transparent); }
 
-  /* ── Main container ── */
-  .container { max-width: 820px; margin: 0 auto; padding: 1.5rem; }
-
-  /* ── Loading / Error ── */
-  .state-msg { text-align: center; padding: 4rem 1rem; color: var(--muted); font-size: 0.95rem; }
-  .state-msg .spinner {
-    display: inline-block; width: 24px; height: 24px;
-    border: 2px solid var(--border); border-top-color: var(--accent);
-    border-radius: 50%; animation: spin 0.7s linear infinite; margin-bottom: 1rem;
+  .theme-toggle {
+    position: absolute; top: 34px; right: 0;
+    width: 38px; height: 38px; border-radius: 10px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    transition: .15s;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  .theme-toggle:hover { color: var(--text); border-color: var(--border-2); background: var(--surface-2); }
+  .theme-toggle svg { width: 18px; height: 18px; }
 
-  /* ── Release accordion ── */
-  .release {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    margin-bottom: 0.75rem;
-    overflow: hidden;
-    transition: border-color 0.15s;
-  }
-  .release.latest { border-color: var(--accent); }
+  .divider { height: 1px; background: var(--border); margin: 4px 0 26px; }
 
-  .release-head {
-    display: flex; align-items: center; gap: 0.75rem;
-    padding: 1rem 1.25rem; cursor: pointer; user-select: none;
-    transition: background 0.12s;
-  }
-  .release-head:hover { background: var(--surface-2); }
-  .release-head .ver { font-size: 1.05rem; font-weight: 600; display: flex; align-items: center; gap: 0.5rem; }
-  .release-head .spacer { flex: 1; }
-
-  .chev { width: 15px; height: 15px; flex-shrink: 0; color: var(--muted); transition: transform 0.2s; }
-  .release.open .chev { transform: rotate(90deg); }
-
-  .tag { font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; padding: 0.18rem 0.5rem; border-radius: 4px; }
-  .tag-latest { background: rgba(59,130,246,0.15); color: var(--accent); }
-
-  .count { font-size: 0.76rem; color: var(--muted); white-space: nowrap; }
-  .count b { color: var(--text); font-weight: 600; }
-  .count.none b { color: var(--muted); }
-  .date  { font-size: 0.76rem; color: var(--muted); white-space: nowrap; }
-
-  .release-body { display: none; padding: 0.25rem 1.25rem 1.25rem; }
-  .release.open .release-body { display: block; }
-
-  /* ── Platform groups ── */
-  .group { margin-top: 1.1rem; }
-  .group-title {
-    font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.07em;
-    color: var(--muted); font-weight: 700;
-    padding-bottom: 0.4rem; margin-bottom: 0.55rem;
-    border-bottom: 1px solid var(--border);
-  }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.5rem; }
-
-  .dl-btn {
-    display: flex; align-items: center; gap: 0.55rem;
-    padding: 0.6rem 0.85rem; border-radius: 8px;
-    border: 1px solid var(--border); background: transparent;
-    color: var(--text); font-size: 0.82rem; cursor: pointer;
-    transition: background 0.15s, border-color 0.15s; text-decoration: none;
-  }
-  .dl-btn:hover { background: rgba(255,255,255,0.04); border-color: var(--accent); color: var(--text); }
-  .dl-btn .icon { font-size: 1.05rem; flex-shrink: 0; }
-  .dl-btn .meta { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.25; }
-  .dl-btn .meta .label { font-weight: 500; }
-  .dl-btn .meta .size  { font-size: 0.7rem; color: var(--muted); }
-  .dl-btn.missing { opacity: 0.32; pointer-events: none; border-style: dashed; }
-
-  /* ── Build-in-progress banner ── */
+  /* ============================ BUILD BANNER ============================ */
   .build-banner {
-    display: none; align-items: center; gap: 0.6rem;
-    max-width: 820px; margin: 1.25rem auto -0.25rem; padding: 0.7rem 1rem;
-    background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.35);
-    border-radius: var(--radius); color: var(--amber); font-size: 0.83rem;
+    display: none; align-items: center; gap: 12px;
+    margin: 0 0 24px; padding: 13px 16px;
+    background: color-mix(in srgb, var(--amber) 9%, var(--surface));
+    border: 1px solid color-mix(in srgb, var(--amber) 38%, var(--border));
+    border-radius: 14px; font-size: .87rem; color: var(--text);
   }
   .build-banner.show { display: flex; }
   .build-banner .bspin {
-    width: 14px; height: 14px; flex-shrink: 0;
-    border: 2px solid rgba(245,158,11,0.3); border-top-color: var(--amber);
-    border-radius: 50%; animation: spin 0.7s linear infinite;
+    width: 15px; height: 15px; flex-shrink: 0;
+    border: 2px solid color-mix(in srgb, var(--amber) 30%, transparent);
+    border-top-color: var(--amber); border-radius: 50%;
+    animation: spin .7s linear infinite;
   }
-  .build-banner b { color: #fbbf24; font-weight: 600; }
-  .build-banner a { color: #fbbf24; text-decoration: underline; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .build-banner .bmain { flex: 1; min-width: 0; }
+  .build-banner .btitle { font-weight: 600; color: var(--amber-2); }
+  .build-banner .bmeta { color: var(--muted); }
+  .build-banner a { color: var(--amber-2); font-weight: 600; white-space: nowrap; }
 
-  /* ── Changelog ── */
-  .changelog { margin-top: 1.15rem; border-top: 1px solid var(--border); padding-top: 0.9rem; }
-  .cl-title { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 700; margin-bottom: 0.5rem; }
-  .cl-loading { color: var(--muted); font-size: 0.82rem; padding: 0.2rem 0; }
-  .changelog .cl-h { font-size: 0.88rem; font-weight: 600; margin: 0.75rem 0 0.3rem; color: var(--text); }
-  .changelog .cl-ul { margin: 0.15rem 0 0.55rem 1.15rem; }
-  .changelog .cl-ul li { font-size: 0.82rem; color: var(--muted); margin-bottom: 0.15rem; }
-  .changelog p { font-size: 0.82rem; color: var(--muted); margin: 0.28rem 0; }
-  .changelog code { background: var(--surface-2); padding: 0.05rem 0.3rem; border-radius: 4px; font-size: 0.78rem; }
-  .cl-src { margin-top: 0.7rem; font-size: 0.72rem; color: var(--muted); }
-
-  /* ── Footer ── */
-  .footer { text-align: center; padding: 2rem 1rem; color: var(--muted); font-size: 0.75rem; border-top: 1px solid var(--border); margin-top: 2rem; }
-
-  /* ── Responsive ── */
-  @media (max-width: 600px) {
-    .grid { grid-template-columns: 1fr 1fr; }
-    .release-head { padding: 0.85rem 1rem; gap: 0.5rem; }
-    .release-body { padding: 0.25rem 1rem 1rem; }
-    .date { display: none; }
+  /* ============================ RELEASE CARD ============================ */
+  .release {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 16px; margin-bottom: 14px; overflow: visible;
+    transition: border-color .15s;
   }
+  .release:hover { border-color: var(--border-2); }
+  .release-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px 20px; cursor: pointer; user-select: none;
+  }
+  .chev { color: var(--faint); transition: transform .2s; flex-shrink: 0; display: inline-flex; }
+  .release.open .chev { transform: rotate(90deg); }
+  .rver { font-size: 1.18rem; font-weight: 700; letter-spacing: -.01em; }
+  .badge-latest {
+    font-size: .64rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+    background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-2);
+    padding: 3px 8px; border-radius: 6px;
+  }
+  .rhead-right { margin-left: auto; display: flex; align-items: center; gap: 14px; text-align: right; }
+  .rcount { font-size: .84rem; color: var(--muted); }
+  .rcount b { color: var(--text); }
+  .rdate { font-size: .82rem; color: var(--faint); }
+
+  .release-body { display: none; padding: 4px 20px 22px; }
+  .release.open .release-body { display: block; animation: fade .2s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+
+  .group { margin-top: 18px; }
+  .group-title {
+    font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--faint); margin: 0 0 10px; display: flex; align-items: center; gap: 8px;
+  }
+  .group-title .os { width: 15px; height: 15px; color: var(--muted); }
+
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  @media (max-width: 780px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 460px) { .grid { grid-template-columns: 1fr; } }
+
+  .dl {
+    position: relative; display: flex; align-items: center; gap: 11px;
+    background: var(--btn-bg); border: 1px solid var(--border);
+    border-radius: 11px; padding: 11px 13px; text-decoration: none; color: var(--text);
+    transition: .13s; min-height: 56px;
+  }
+  a.dl:hover { background: var(--btn-hover); border-color: var(--accent); text-decoration: none; transform: translateY(-1px); }
+  .dl .os { width: 22px; height: 22px; flex-shrink: 0; color: var(--text); }
+  .dl-txt { min-width: 0; line-height: 1.25; }
+  .dl-label { font-size: .9rem; font-weight: 600; }
+  .dl-sub { font-size: .72rem; color: var(--muted); }
+  .dl-size { margin-left: auto; font-size: .72rem; color: var(--faint); white-space: nowrap; padding-left: 4px; }
+  .dl.missing { opacity: .4; pointer-events: none; border-style: dashed; }
+  .dl.missing .dl-size { font-style: italic; }
+
+  /* device detection */
+  .device-banner {
+    display: none; align-items: center; gap: 10px;
+    margin: 0 0 24px; padding: 12px 16px;
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+    border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
+    border-radius: 14px; font-size: .86rem; color: var(--text);
+  }
+  .device-banner.show { display: flex; }
+  .device-banner .os { width: 18px; height: 18px; color: var(--accent); flex-shrink: 0; }
+  .device-banner b { font-weight: 600; }
+  .device-banner .rec-lbl { color: var(--accent-2); font-weight: 600; }
+  .group[data-dim="1"] { opacity: .5; transition: opacity .2s; }
+  .group[data-dim="1"]:hover { opacity: 1; }
+  .dl.rec { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .dl.rec::after { display: none; } /* keep tooltip logic, badge shown separately */
+  .rec-badge {
+    position: absolute; top: -8px; right: 8px;
+    background: var(--accent); color: #fff; font-size: .58rem; font-weight: 700;
+    letter-spacing: .04em; text-transform: uppercase; padding: 2px 7px; border-radius: 6px;
+  }
+
+  /* tooltip */
+  .dl[data-tip]:hover::after {
+    content: attr(data-tip);
+    position: absolute; left: 50%; bottom: calc(100% + 9px); transform: translateX(-50%);
+    background: var(--tip-bg); color: #fff; padding: 8px 11px; border-radius: 9px;
+    font-size: .74rem; line-height: 1.35; width: max-content; max-width: 230px; white-space: normal;
+    text-align: left; box-shadow: 0 8px 26px rgba(0,0,0,.4); z-index: 20; pointer-events: none;
+  }
+  .dl[data-tip]:hover::before {
+    content: ""; position: absolute; left: 50%; bottom: calc(100% + 3px); transform: translateX(-50%);
+    border: 6px solid transparent; border-top-color: var(--tip-bg); z-index: 20; pointer-events: none;
+  }
+
+  /* changelog */
+  .changelog { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 16px; }
+  .cl-title { font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); font-weight: 700; margin-bottom: 8px; }
+  .cl-loading { color: var(--muted); font-size: .83rem; }
+  .changelog .cl-h { font-size: .88rem; font-weight: 600; margin: 14px 0 5px; color: var(--text); }
+  .changelog .cl-ul { margin: 3px 0 10px 18px; padding: 0; }
+  .changelog .cl-ul li { font-size: .82rem; color: var(--muted); margin-bottom: 3px; }
+  .changelog p { font-size: .82rem; color: var(--muted); margin: 5px 0; }
+  .changelog code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: .78rem; }
+  .cl-src { margin-top: 12px; font-size: .72rem; color: var(--faint); }
+
+  /* states */
+  .state {
+    text-align: center; padding: 56px 24px; margin: 8px 0 40px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 16px; color: var(--muted);
+  }
+  .state .state-ic { width: 40px; height: 40px; color: var(--faint); margin: 0 auto 14px; display: block; }
+  .state .state-t { font-size: 1.02rem; color: var(--text); font-weight: 600; margin-bottom: 6px; }
+  .state .state-s { font-size: .86rem; }
+  .spin-lg { width: 30px; height: 30px; border: 3px solid var(--border-2); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto 16px; }
+
+  /* footer */
+  footer { border-top: 1px solid var(--border); margin-top: 30px; padding: 24px 0 40px; }
+  .foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .foot-left { display: flex; align-items: center; gap: 10px; font-size: .82rem; color: var(--muted); }
+  .foot-links { display: flex; align-items: center; gap: 18px; font-size: .82rem; }
+  .foot-links a { color: var(--muted); }
+  .foot-links a:hover { color: var(--text); }
 </style>
 </head>
 <body>
+<div class="wrap">
+  <header>
+    <button class="theme-toggle" id="themeToggle" title="Toggle light / dark" aria-label="Toggle theme"></button>
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 20.5h8M12 17.5v3" stroke-linecap="round"/></svg>
+      <span><span class="rd">RustDesk</span> — Neo⁺ Remote</span>
+    </div>
+    <div class="subtitle">Pre-configured custom builds · auto-built from upstream releases</div>
+    <div class="headmeta">
+      <span class="status-pill"><span class="status-dot"></span> ir.remote-neo.com</span>
+    </div>
+  </header>
 
-<div class="header">
-  <h1>🖥️ <span>RustDesk</span> — Neo+ Remote</h1>
-  <p>Pre-configured custom builds · auto-built from upstream releases</p>
-  <div class="server-badge">
-    <span class="dot"></span>
-    ir.remote-neo.com
-  </div>
-</div>
+  <div class="divider"></div>
 
-<div class="build-banner" id="buildBanner"></div>
+  <div class="build-banner" id="buildBanner"></div>
+  <div class="device-banner" id="deviceBanner"></div>
 
-<div class="container">
-  <div id="releases">
-    <div class="state-msg"><div class="spinner"></div><br>Loading releases…</div>
-  </div>
-</div>
+  <main id="releases">
+    <div class="state"><div class="spin-lg"></div><div class="state-s">Loading builds…</div></div>
+  </main>
 
-<div class="footer">
-  Built by <strong>penangit</strong> · Automated with GitHub Actions<br>
-  Clients connect to <code>ir.remote-neo.com</code> · Password + click approval
+  <footer>
+    <div class="foot">
+      <div class="foot-left"><span class="status-pill" style="padding:5px 11px"><span class="status-dot"></span> ir.remote-neo.com</span></div>
+      <div class="foot-links">
+        <a href="https://github.com/penangit/rustdesk-builder-v2#readme" target="_blank" rel="noopener">Setup guide</a>
+        <a href="https://rustdesk.com/" target="_blank" rel="noopener">About RustDesk</a>
+        <a href="#" id="footTheme">Switch theme</a>
+      </div>
+    </div>
+  </footer>
 </div>
 
 <script>
-// ── Config ──────────────────────────────────────────────────────────────
-const REPO = 'penangit/rustdesk-builder-v2';
-const API  = `https://api.github.com/repos/${REPO}/releases`;
+  const REPO = 'penangit/rustdesk-builder-v2';
+  const RELEASES_API = `https://api.github.com/repos/${REPO}/releases`;
+  const RUNS_API = `https://api.github.com/repos/${REPO}/actions/runs?per_page=20`;
+  const GH_HEADERS = { Accept: 'application/vnd.github+json' };
 
-// Platform groups → each item matches a release asset by filename.
-// Arch tokens are chosen so they never collide:
-//   x86_64  (64-bit)  vs  i686 (32-bit)   — neither is a substring of the other.
-// The extension anchor ($) keeps e.g. an Android x86_64 .apk out of the
-// Windows/Linux x86_64 slots. Expected filenames the workflows produce:
-//   Windows : RustDesk-x86_64.exe / .msi   |   RustDesk-i686.exe / .msi
-//   Android : RustDesk-aarch64.apk / RustDesk-armv7.apk / RustDesk-x86_64.apk
-//   Linux   : RustDesk-{x86_64,aarch64}.{deb,rpm}  (Fedora rpm has NO 'suse')
-//             RustDesk-suse-{x86_64,aarch64}.rpm   (openSUSE)
-//             RustDesk-{x86_64,aarch64}.{AppImage,flatpak}
-//             RustDesk-x86_64.pkg.tar.zst          (Arch, x86_64 only)
-//   macOS   : RustDesk-x86_64.dmg
-const GROUPS = [
-  { name: 'Windows', items: [
-    { label: '64-bit EXE', icon: '🪟', match: n => /x86_64.*\.exe$/i.test(n) },
-    { label: '64-bit MSI', icon: '📦', match: n => /x86_64.*\.msi$/i.test(n) },
-    { label: '32-bit EXE', icon: '🪟', match: n => /i686.*\.exe$/i.test(n) },
-    { label: '32-bit MSI', icon: '📦', match: n => /i686.*\.msi$/i.test(n) },
-  ]},
-  { name: 'Android', items: [
-    { label: 'arm64 (aarch64)', icon: '📱', match: n => /aarch64.*\.apk$/i.test(n) },
-    { label: 'armv7',           icon: '📱', match: n => /armv7.*\.apk$/i.test(n) },
-    { label: 'x86_64',          icon: '📱', match: n => /x86_64.*\.apk$/i.test(n) },
-  ]},
-  { name: 'Linux', items: [
-    { label: 'x86_64 · .deb',        icon: '🐧', match: n => /x86_64.*\.deb$/i.test(n) },
-    { label: 'arm64 · .deb',         icon: '🐧', match: n => /aarch64.*\.deb$/i.test(n) },
-    { label: 'x86_64 · .rpm',        icon: '🐧', match: n => /x86_64.*\.rpm$/i.test(n) && !/suse/i.test(n) },
-    { label: 'arm64 · .rpm',         icon: '🐧', match: n => /aarch64.*\.rpm$/i.test(n) && !/suse/i.test(n) },
-    { label: 'x86_64 · .rpm (SUSE)', icon: '🦎', match: n => /suse.*x86_64.*\.rpm$/i.test(n) },
-    { label: 'arm64 · .rpm (SUSE)',  icon: '🦎', match: n => /suse.*aarch64.*\.rpm$/i.test(n) },
-    { label: 'x86_64 · AppImage',    icon: '📦', match: n => /x86_64.*\.appimage$/i.test(n) },
-    { label: 'arm64 · AppImage',     icon: '📦', match: n => /aarch64.*\.appimage$/i.test(n) },
-    { label: 'x86_64 · flatpak',     icon: '📦', match: n => /x86_64.*\.flatpak$/i.test(n) },
-    { label: 'arm64 · flatpak',      icon: '📦', match: n => /aarch64.*\.flatpak$/i.test(n) },
-    { label: 'x86_64 · Arch (zst)',  icon: '🏛️', match: n => /x86_64.*\.pkg\.tar\.zst$/i.test(n) },
-  ]},
-  { name: 'macOS', items: [
-    { label: 'DMG', icon: '🍎', match: n => /\.dmg$/i.test(n) },
-  ]},
-];
-const TOTAL_VARIANTS = GROUPS.reduce((a, g) => a + g.items.length, 0);
+  /* ---------------- OS / package icons (custom, theme-adaptive) ---------------- */
+  const ICONS = {
+    windows: '<svg class="os" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.4 10.3 4.3v6.9H3zM11.3 4.15 21 2.8v8.4h-9.7zM3 12.2h7.3v6.9L3 18zM11.3 12.2H21v8.4l-9.7-1.35z"/></svg>',
+    linux: '<svg class="os" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2.4c-2.2 0-3.6 1.7-3.6 4.1 0 .7.15 1.4.2 2 .06.8-1.1 1.8-2.1 3.6C5.5 14 4.9 15.9 4.9 17.2c0 1 .6 1.6 1.5 1.6.35 0 .65-.13.9-.4.6 1.25 2.4 2.3 4.7 2.3s4.1-1.05 4.7-2.3c.25.27.55.4.9.4.9 0 1.5-.6 1.5-1.6 0-1.3-.6-3.2-1.6-5-.99-1.8-2.16-2.8-2.1-3.6.05-.6.2-1.3.2-2C15.6 4.1 14.2 2.4 12 2.4z"/><circle cx="10.5" cy="7" r=".8" fill="var(--btn-bg)"/><circle cx="13.5" cy="7" r=".8" fill="var(--btn-bg)"/><path d="M10.9 8.2h2.2L12 9.8z" fill="#f6a821"/><path d="M9 19.1 7.9 21.5M15 19.1l1.1 2.4" stroke="#f6a821" stroke-width="1.4" stroke-linecap="round"/></svg>',
+    android: '<svg class="os" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 8.6a5 5 0 0 1 10 0V16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1z"/><circle cx="9.7" cy="10.4" r=".85" fill="var(--btn-bg)"/><circle cx="14.3" cy="10.4" r=".85" fill="var(--btn-bg)"/><path d="M8.6 5.3 7.4 3.5M15.4 5.3l1.2-1.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><rect x="5" y="10.2" width="1.5" height="4.6" rx=".75" fill="currentColor"/><rect x="17.5" y="10.2" width="1.5" height="4.6" rx=".75" fill="currentColor"/></svg>',
+    apple: '<svg class="os" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15.8 3.1c.15 1-.25 2-.85 2.7-.65.8-1.7 1.4-2.7 1.3-.15-1 .3-2 .9-2.6.65-.75 1.75-1.3 2.65-1.4zM18.9 16.9c-.5 1.15-.75 1.65-1.4 2.65-.9 1.35-2.2 3.05-3.8 3.05-1.4 0-1.8-.9-3.6-.9s-2.25.9-3.6.9c-1.6 0-2.85-1.55-3.75-2.9C-.05 15.7.35 10 3.7 8.7c1.15-.45 2.35-.25 3.35-.25 1.05 0 2.05-.55 3.35-.55 1.05 0 2.4.4 3.3 1.35-2.55 1.6-2.15 5.35.6 6.7z"/></svg>',
+    package: '<svg class="os" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.6 20.5 7v10L12 21.4 3.5 17V7z"/><path d="M3.7 7 12 11.6 20.3 7M12 11.6V21.2"/></svg>'
+  };
 
-// Remember which versions the user has expanded, so a background refresh
-// doesn't collapse them. Latest auto-opens once on first load.
-const openState = new Set();
-let firstLoad = true;
+  /* ---------------- platform slots + tooltips ---------------- */
+  const GROUPS = [
+    { name: 'Windows', icon: 'windows', items: [
+      { label: '64-bit', sub: 'EXE · portable',  icon: 'windows', tip: 'Best for almost every PC. Portable — just download and run, no install needed.', match: n => /x86_64.*\.exe$/i.test(n) },
+      { label: '64-bit', sub: 'MSI · installer', icon: 'windows', tip: 'Installer package for 64-bit Windows. Use for setup or managed/silent deployment.', match: n => /x86_64.*\.msi$/i.test(n) },
+      { label: '32-bit', sub: 'EXE · portable',  icon: 'windows', tip: 'Only for old 32-bit Windows. Use 64-bit unless you know your PC is 32-bit.', match: n => /i686.*\.exe$/i.test(n) },
+      { label: '32-bit', sub: 'MSI · installer', icon: 'windows', tip: 'Installer for old 32-bit Windows.', match: n => /i686.*\.msi$/i.test(n) },
+    ]},
+    { name: 'Android', icon: 'android', items: [
+      { label: 'arm64',      sub: 'aarch64 · APK', icon: 'android', tip: 'Almost all phones & tablets from recent years. Pick this one.', match: n => /aarch64.*\.apk$/i.test(n) },
+      { label: 'arm 32-bit', sub: 'armv7 · APK',   icon: 'android', tip: 'Older 32-bit ARM phones/tablets.', match: n => /armv7.*\.apk$/i.test(n) },
+      { label: 'x86_64',     sub: 'APK',           icon: 'android', tip: 'Rare — Intel/AMD Android devices, emulators, some Chromebooks.', match: n => /x86_64.*\.apk$/i.test(n) },
+    ]},
+    { name: 'Linux', icon: 'linux', items: [
+      { label: 'x86_64', sub: '.deb',        icon: 'linux',   tip: 'Debian, Ubuntu, Mint — 64-bit Intel/AMD. Install with your package manager.', match: n => /x86_64.*\.deb$/i.test(n) },
+      { label: 'arm64',  sub: '.deb',        icon: 'linux',   tip: 'Debian/Ubuntu on 64-bit ARM — Raspberry Pi 4/5, ARM servers.', match: n => /aarch64.*\.deb$/i.test(n) },
+      { label: 'x86_64', sub: '.rpm · Fedora', icon: 'linux', tip: 'Fedora, RHEL, CentOS, Rocky, Alma — 64-bit.', match: n => /x86_64.*\.rpm$/i.test(n) && !/suse/i.test(n) },
+      { label: 'arm64',  sub: '.rpm · Fedora', icon: 'linux', tip: 'Fedora / RHEL family on 64-bit ARM.', match: n => /aarch64.*\.rpm$/i.test(n) && !/suse/i.test(n) },
+      { label: 'x86_64', sub: '.rpm · SUSE', icon: 'linux',   tip: 'openSUSE / SUSE Linux Enterprise — 64-bit.', match: n => /suse.*x86_64.*\.rpm$/i.test(n) },
+      { label: 'arm64',  sub: '.rpm · SUSE', icon: 'linux',   tip: 'openSUSE on 64-bit ARM.', match: n => /suse.*aarch64.*\.rpm$/i.test(n) },
+      { label: 'x86_64', sub: 'AppImage',    icon: 'package', tip: 'Works on any distro — portable, no install. Make it executable (chmod +x) and run.', match: n => /x86_64.*\.appimage$/i.test(n) },
+      { label: 'arm64',  sub: 'AppImage',    icon: 'package', tip: 'Any 64-bit ARM distro — portable, no install.', match: n => /aarch64.*\.appimage$/i.test(n) },
+      { label: 'x86_64', sub: 'flatpak',     icon: 'package', tip: 'Any distro that has Flatpak installed.', match: n => /x86_64.*\.flatpak$/i.test(n) },
+      { label: 'arm64',  sub: 'flatpak',     icon: 'package', tip: 'Any 64-bit ARM distro with Flatpak.', match: n => /aarch64.*\.flatpak$/i.test(n) },
+      { label: 'x86_64', sub: 'Arch · zst',  icon: 'package', tip: 'Arch Linux, Manjaro, EndeavourOS — install with pacman.', match: n => /x86_64.*\.pkg\.tar\.zst$/i.test(n) },
+    ]},
+    { name: 'macOS', icon: 'apple', items: [
+      { label: 'x86_64', sub: 'DMG', icon: 'apple', tip: 'macOS on Intel (and Apple Silicon via Rosetta).', match: n => /x86_64.*\.dmg$/i.test(n) },
+    ]},
+  ];
 
-const CHEV = '<svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg>';
+  const TOTAL_SLOTS = GROUPS.reduce((n, g) => n + g.items.length, 0);
+  const fmtSize = b => b >= 1048576 ? (b/1048576).toFixed(1)+' MB' : (b/1024).toFixed(0)+' KB';
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const openState = new Set();
 
-function formatSize(bytes) {
-  if (!bytes) return '';
-  const mb = bytes / (1024 * 1024);
-  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${(bytes / 1024).toFixed(0)} KB`;
-}
+  /* ---------------- render ---------------- */
+  function renderRelease(rel, isLatest) {
+    const assets = rel.assets || [];
+    const found = assets.filter(a => GROUPS.some(g => g.items.some(it => it.match(a.name)))).length;
+    const date = new Date(rel.published_at || rel.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    if (isLatest && !openState.size) openState.add(rel.tag_name);
 
-function relativeDate(iso) {
-  const d = new Date(iso), now = new Date();
-  const days = Math.floor((now - d) / 86400000);
-  if (days === 0) return 'today';
-  if (days === 1) return 'yesterday';
-  if (days < 30) return `${days}d ago`;
-  return d.toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' });
-}
+    const groupsHtml = GROUPS.map(g => {
+      const items = g.items.map((it, idx) => {
+        const prim = idx === 0 ? ' data-primary="1"' : '';
+        const a = assets.find(x => it.match(x.name));
+        if (a) {
+          return `<a class="dl"${prim} href="${a.browser_download_url}" data-tip="${esc(it.tip)}">
+            ${ICONS[it.icon]}
+            <span class="dl-txt"><span class="dl-label">${it.label}</span><br><span class="dl-sub">${it.sub}</span></span>
+            <span class="dl-size">${fmtSize(a.size)}</span></a>`;
+        }
+        return `<span class="dl missing"${prim}>
+            ${ICONS[it.icon]}
+            <span class="dl-txt"><span class="dl-label">${it.label}</span><br><span class="dl-sub">${it.sub}</span></span>
+            <span class="dl-size">—</span></span>`;
+      }).join('');
+      return `<div class="group" data-os="${g.name.toLowerCase()}"><div class="group-title">${ICONS[g.icon]} ${g.name}</div><div class="grid">${items}</div></div>`;
+    }).join('');
 
-function renderRelease(rel, isLatest) {
-  const version = rel.tag_name.replace(/^v/, '');
-  const assets  = rel.assets || [];
-  const names   = assets.map(a => a.name);
-  const built   = GROUPS.reduce((a, g) => a + g.items.filter(it => names.some(nm => it.match(nm))).length, 0);
-  const isOpen  = openState.has(version);
-
-  let groupsHtml = '';
-  for (const g of GROUPS) {
-    let cells = '';
-    for (const it of g.items) {
-      const asset = assets.find(a => it.match(a.name));
-      if (asset) {
-        cells += `
-          <a class="dl-btn" href="${asset.browser_download_url}" title="${asset.name}">
-            <span class="icon">${it.icon}</span>
-            <span class="meta"><span class="label">${it.label}</span><span class="size">${formatSize(asset.size)}</span></span>
-          </a>`;
-      } else {
-        cells += `
-          <span class="dl-btn missing">
-            <span class="icon">${it.icon}</span>
-            <span class="meta"><span class="label">${it.label}</span><span class="size">not built</span></span>
-          </span>`;
-      }
-    }
-    groupsHtml += `<div class="group"><div class="group-title">${g.name}</div><div class="grid">${cells}</div></div>`;
-  }
-
-  return `
-    <div class="release${isLatest ? ' latest' : ''}${isOpen ? ' open' : ''}" data-ver="${version}">
-      <div class="release-head" onclick="toggleRelease('${version}')">
-        ${CHEV}
-        <span class="ver">v${version}${isLatest ? ' <span class="tag tag-latest">Latest</span>' : ''}</span>
-        <span class="spacer"></span>
-        <span class="count${built === 0 ? ' none' : ''}"><b>${built}</b> / ${TOTAL_VARIANTS} builds</span>
-        <span class="date">${relativeDate(rel.published_at || rel.created_at)}</span>
+    const open = openState.has(rel.tag_name);
+    return `<div class="release ${open ? 'open' : ''}" data-ver="${rel.tag_name}">
+      <div class="release-head" onclick="toggleRelease('${rel.tag_name}')">
+        <span class="chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></span>
+        <span class="rver">${rel.tag_name}</span>
+        ${isLatest ? '<span class="badge-latest">Latest</span>' : ''}
+        <span class="rhead-right"><span class="rcount"><b>${found}</b> / ${TOTAL_SLOTS} builds</span><span class="rdate">${date}</span></span>
       </div>
-      <div class="release-body">${groupsHtml}<div class="changelog" data-cl="${version}"></div></div>
+      <div class="release-body">${groupsHtml}<div class="changelog" data-cl="${rel.tag_name}"></div></div>
     </div>`;
-}
-
-function toggleRelease(version) {
-  const opening = !openState.has(version);
-  if (opening) openState.add(version); else openState.delete(version);
-  const card = document.querySelector(`.release[data-ver="${version}"]`);
-  if (!card) return;
-  card.classList.toggle('open');
-  if (opening) {
-    const cl = card.querySelector('.changelog');
-    if (cl) loadChangelog(version, cl);
   }
-}
 
-// ── Minimal, HTML-safe Markdown renderer (headers / lists / links / code) ──
-function escapeHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function inlineMd(s) {
-  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  s = s.replace(/(^|\s)(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
-  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  return s;
-}
-// Changelog section keywords rendered as headers even without a markdown '###'.
-const SECTION_WORDS = /^(Added|Changed|Changes?|Fixed|Fixes?|Removed|Remove|Deprecated|Security|Performance|Improvements?|New|Notes?|Breaking(?: Changes?)?|Features?)$/i;
-// RustDesk wraps notes in <details><summary>Changelog</summary>…</details>, preceded
-// by a download table that links to rustdesk's OWN binaries — keep ONLY the changelog.
-function extractChangelog(body) {
-  let m = body.match(/<summary>\s*Changelog\s*<\/summary>([\s\S]*?)<\/details>/i);
-  if (m) return m[1].trim();
-  m = body.match(/(?:^|\n)#{0,6}\s*Changelog\s*\n([\s\S]*)$/i);
-  if (m) return m[1].replace(/<\/?(?:details|summary)[^>]*>/gi, '').trim();
-  // Fallback: drop tables / shield badges / promo lines, keep the rest.
-  return body.split(/\r?\n/).filter(l =>
-    !/^\s*\|/.test(l) && !/^\s*\[!\[/.test(l) &&
-    !/^For more downloads/i.test(l) && !/^For the latest features/i.test(l)
-  ).join('\n').replace(/<\/?(?:details|summary)[^>]*>/gi, '').trim();
-}
-function mdToHtml(md) {
-  const lines = escapeHtml(md).split(/\r?\n/);
-  let html = '', inList = false;
-  const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
-  for (const raw of lines) {
-    const line = raw.replace(/\s+$/, '');
-    if (!line.trim()) { closeList(); continue; }
-    let m;
-    if ((m = line.match(/^#{1,6}\s+(.*)$/)))      { closeList(); html += `<h4 class="cl-h">${inlineMd(m[1])}</h4>`; }
-    else if ((m = line.match(/^\s*[-*]\s+(.*)$/))) { if (!inList) { html += '<ul class="cl-ul">'; inList = true; } html += `<li>${inlineMd(m[1])}</li>`; }
-    else if (SECTION_WORDS.test(line.trim()))     { closeList(); html += `<h4 class="cl-h">${line.trim()}</h4>`; }
-    else                                          { closeList(); html += `<p>${inlineMd(line)}</p>`; }
-  }
-  closeList();
-  return html;
-}
-
-// ── Lazy-load upstream changelog per version (cached) ──
-const changelogCache = {}; // version -> html | 'loading' | 'error'
-async function loadChangelog(version, container) {
-  const cached = changelogCache[version];
-  if (cached === 'loading') return;
-  if (cached && cached !== 'error') { container.innerHTML = cached; return; }
-  changelogCache[version] = 'loading';
-  container.innerHTML = '<div class="cl-loading">Loading changelog…</div>';
-  let body = '';
-  for (const tag of [version, 'v' + version]) {
+  async function loadReleases() {
+    const el = document.getElementById('releases');
     try {
-      const r = await fetch(`https://api.github.com/repos/rustdesk/rustdesk/releases/tags/${tag}`,
-        { headers: { Accept: 'application/vnd.github+json' } });
-      if (r.ok) { const j = await r.json(); body = (j.body || '').trim(); if (body) break; }
-    } catch (_) {}
+      const res = await fetch(RELEASES_API, { headers: GH_HEADERS });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = (await res.json()).filter(r => !r.draft);
+      if (!data.length) {
+        el.innerHTML = `<div class="state">
+          <svg class="state-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 2.6 20.5 7v10L12 21.4 3.5 17V7z"/><path d="M3.7 7 12 11.6 20.3 7M12 11.6V21.2"/></svg>
+          <div class="state-t">No builds published yet</div>
+          <div class="state-s">Trigger a workflow from GitHub Actions to publish the first release.</div></div>`;
+        return;
+      }
+      el.innerHTML = data.map((r, i) => renderRelease(r, i === 0)).join('');
+      openState.forEach(v => {
+        const card = document.querySelector(`.release[data-ver="${v}"]`);
+        if (card) { const cl = card.querySelector('.changelog'); if (cl) loadChangelog(v, cl); }
+      });
+      enhanceForDevice();
+    } catch (err) {
+      el.innerHTML = `<div class="state"><div class="state-t">Couldn't load builds</div><div class="state-s">${esc(err.message)}</div></div>`;
+    }
   }
-  if (body) {
-    const html = `<div class="cl-title">Changelog — RustDesk v${version}</div>` + mdToHtml(extractChangelog(body)) +
-      `<div class="cl-src">Mirrored from <a href="https://github.com/rustdesk/rustdesk/releases/tag/${version}" target="_blank" rel="noopener">rustdesk/rustdesk ↗</a></div>`;
-    changelogCache[version] = html;
-    container.innerHTML = html;
-  } else {
-    changelogCache[version] = 'error';
-    container.innerHTML = '<div class="cl-loading">Changelog unavailable.</div>';
+
+  function toggleRelease(v) {
+    const opening = !openState.has(v);
+    if (opening) openState.add(v); else openState.delete(v);
+    const card = document.querySelector(`.release[data-ver="${v}"]`);
+    if (!card) return;
+    card.classList.toggle('open');
+    if (opening) { const cl = card.querySelector('.changelog'); if (cl) loadChangelog(v, cl); }
+    enhanceForDevice();
   }
-}
 
-// ── Build-in-progress banner (polls the Actions runs API) ──
-const RUNS_API = `https://api.github.com/repos/${REPO}/actions/runs?per_page=20`;
-let wasBuilding = false;
-async function checkBuilds() {
-  const banner = document.getElementById('buildBanner');
-  try {
-    const res = await fetch(RUNS_API, { headers: { Accept: 'application/vnd.github+json' } });
-    if (!res.ok) throw new Error();
-    const runs = (await res.json()).workflow_runs || [];
-    const active = runs.filter(r => r.status === 'in_progress' || r.status === 'queued');
-    if (active.length) {
-      const names = [...new Set(active.map(r => r.name))].join(', ');
-      banner.innerHTML = `<span class="bspin"></span><span><b>Build in progress</b> — ${names} · <a href="${active[0].html_url}" target="_blank" rel="noopener">view run ↗</a></span>`;
-      banner.classList.add('show');
-      return true;
+  /* ---------------- changelog (upstream, extracted + rendered) ---------------- */
+  const SECTION_WORDS = /^(Added|Changed|Changes?|Fixed|Fixes?|Removed|Remove|Deprecated|Security|Performance|Improvements?|New|Notes?|Breaking(?: Changes?)?|Features?)$/i;
+  function extractChangelog(body) {
+    let m = body.match(/<summary>\s*Changelog\s*<\/summary>([\s\S]*?)<\/details>/i);
+    if (m) return m[1].trim();
+    m = body.match(/(?:^|\n)#{0,6}\s*Changelog\s*\n([\s\S]*)$/i);
+    if (m) return m[1].replace(/<\/?(?:details|summary)[^>]*>/gi, '').trim();
+    return body.split(/\r?\n/).filter(l => !/^\s*\|/.test(l) && !/^\s*\[!\[/.test(l) && !/^For more downloads/i.test(l) && !/^For the latest features/i.test(l)).join('\n').replace(/<\/?(?:details|summary)[^>]*>/gi, '').trim();
+  }
+  function inlineMd(s) {
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    s = s.replace(/(^|\s)(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    return s;
+  }
+  function mdToHtml(md) {
+    const lines = esc(md).split(/\r?\n/);
+    let html = '', inList = false;
+    const close = () => { if (inList) { html += '</ul>'; inList = false; } };
+    for (const raw of lines) {
+      const line = raw.replace(/\s+$/, '');
+      if (!line.trim()) { close(); continue; }
+      let m;
+      if ((m = line.match(/^#{1,6}\s+(.*)$/)))      { close(); html += `<h4 class="cl-h">${inlineMd(m[1])}</h4>`; }
+      else if ((m = line.match(/^\s*[-*]\s+(.*)$/))) { if (!inList) { html += '<ul class="cl-ul">'; inList = true; } html += `<li>${inlineMd(m[1])}</li>`; }
+      else if (SECTION_WORDS.test(line.trim()))      { close(); html += `<h4 class="cl-h">${line.trim()}</h4>`; }
+      else                                           { close(); html += `<p>${inlineMd(line)}</p>`; }
     }
-    banner.classList.remove('show');
-    return false;
-  } catch (_) { banner.classList.remove('show'); return false; }
-}
-async function pollBuilds() {
-  const building = await checkBuilds();
-  if (wasBuilding && !building) loadReleases(); // a build just finished → pull fresh assets
-  wasBuilding = building;
-}
-
-// ── Fetch & Render ──────────────────────────────────────────────────────
-async function loadReleases() {
-  const el = document.getElementById('releases');
-  try {
-    const res = await fetch(API, { headers: { Accept: 'application/vnd.github+json' } });
-    if (!res.ok) throw new Error(`GitHub API ${res.status}`);
-    const data = await res.json();
-
-    if (!data.length) {
-      el.innerHTML = '<div class="state-msg">No releases yet. Trigger a build from GitHub Actions.</div>';
-      return;
+    close();
+    return html;
+  }
+  const clCache = {};
+  async function loadChangelog(version, container) {
+    const c = clCache[version];
+    if (c === 'loading') return;
+    if (c && c !== 'error') { container.innerHTML = c; return; }
+    clCache[version] = 'loading';
+    container.innerHTML = '<div class="cl-loading">Loading changelog…</div>';
+    let body = '';
+    for (const tag of [version, version.replace(/^v/, ''), 'v' + version.replace(/^v/, '')]) {
+      try {
+        const r = await fetch(`https://api.github.com/repos/rustdesk/rustdesk/releases/tags/${tag}`, { headers: GH_HEADERS });
+        if (r.ok) { const j = await r.json(); body = (j.body || '').trim(); if (body) break; }
+      } catch (_) {}
     }
+    if (body) {
+      const html = `<div class="cl-title">Changelog — RustDesk ${version}</div>` + mdToHtml(extractChangelog(body)) +
+        `<div class="cl-src">Mirrored from <a href="https://github.com/rustdesk/rustdesk/releases/tag/${version.replace(/^v/, '')}" target="_blank" rel="noopener">rustdesk/rustdesk ↗</a></div>`;
+      clCache[version] = html; container.innerHTML = html;
+    } else { clCache[version] = 'error'; container.innerHTML = '<div class="cl-loading">Changelog unavailable.</div>'; }
+  }
 
-    if (firstLoad) {
-      openState.add(data[0].tag_name.replace(/^v/, '')); // expand latest once
-      firstLoad = false;
-    }
+  /* ---------------- build-in-progress banner ---------------- */
+  let activeBuild = null;   // { started, title, url }
+  function fmtElapsed(ms) {
+    const s = Math.max(0, Math.floor(ms/1000)), m = Math.floor(s/60), h = Math.floor(m/60);
+    if (h > 0) return `${h}h ${m%60}m`;
+    if (m > 0) return `${m}m ${s%60}s`;
+    return `${s}s`;
+  }
+  function paintBanner() {
+    const el = document.getElementById('buildBanner');
+    if (!activeBuild) { el.classList.remove('show'); return; }
+    const elapsed = fmtElapsed(Date.now() - activeBuild.started);
+    el.innerHTML = `<span class="bspin"></span>
+      <span class="bmain"><span class="btitle">Building ${activeBuild.version ? 'RustDesk ' + activeBuild.version : ''}</span>
+      <span class="bmeta"> — ${esc(activeBuild.title)} · ${elapsed} elapsed</span></span>
+      <a href="${activeBuild.url}" target="_blank" rel="noopener">view run ↗</a>`;
+    el.classList.add('show');
+  }
+  let wasBuilding = false;
+  async function pollBuilds() {
+    try {
+      const res = await fetch(RUNS_API, { headers: GH_HEADERS });
+      if (!res.ok) throw new Error();
+      const runs = (await res.json()).workflow_runs || [];
+      const active = runs.filter(r => r.status === 'in_progress' || r.status === 'queued');
+      if (active.length) {
+        const titles = [...new Set(active.map(r => (r.display_title || r.name)))];
+        const started = Math.min(...active.map(r => new Date(r.run_started_at || r.created_at).getTime()));
+        const verMatch = titles.join(' ').match(/\d+\.\d+\.\d+/);
+        activeBuild = { started, title: titles.join(', '), url: active[0].html_url, version: verMatch ? verMatch[0] : '' };
+        paintBanner();
+        if (!wasBuilding) wasBuilding = true;
+      } else {
+        if (wasBuilding) { loadReleases(); wasBuilding = false; }
+        activeBuild = null; paintBanner();
+      }
+    } catch (_) { /* leave last state */ }
+  }
 
-    el.innerHTML = data.map((r, i) => renderRelease(r, i === 0)).join('');
+  /* ---------------- device detection ---------------- */
+  const OS_LABEL = { android: 'Android', ios: 'iOS', windows: 'Windows', macos: 'macOS', linux: 'Linux' };
+  function detectOS() {
+    const ua = ((navigator.userAgent || '') + ' ' + (navigator.platform || '')).toLowerCase();
+    const p = (navigator.userAgentData && navigator.userAgentData.platform ? navigator.userAgentData.platform : '').toLowerCase();
+    if (/android/.test(ua) || p === 'android') return 'android';
+    if (/iphone|ipad|ipod/.test(ua)) return 'ios';
+    if (/windows/.test(ua) || p.includes('win')) return 'windows';
+    if (/mac os x|macintosh/.test(ua) || p.includes('mac')) return 'macos';
+    if (/linux/.test(ua) || p.includes('linux')) return 'linux';
+    return null;
+  }
+  function enhanceForDevice() {
+    const os = detectOS();
+    const banner = document.getElementById('deviceBanner');
+    document.querySelectorAll('.group[data-dim="1"]').forEach(g => g.removeAttribute('data-dim'));
+    document.querySelectorAll('.dl.rec').forEach(b => b.classList.remove('rec'));
+    document.querySelectorAll('.rec-badge').forEach(b => b.remove());
+    if (!os) { banner.classList.remove('show'); return; }
 
-    // Re-populate changelogs for any expanded cards (cached → instant).
-    openState.forEach(v => {
-      const card = document.querySelector(`.release[data-ver="${v}"]`);
-      if (card) { const cl = card.querySelector('.changelog'); if (cl) loadChangelog(v, cl); }
+    let recLabel = '';
+    document.querySelectorAll('.group').forEach(g => {
+      const gos = g.getAttribute('data-os');
+      if (gos !== os) { g.setAttribute('data-dim', '1'); return; }
+      const primary = g.querySelector('.dl[data-primary="1"]');
+      if (primary && !primary.classList.contains('missing')) {
+        primary.classList.add('rec');
+        const badge = document.createElement('span');
+        badge.className = 'rec-badge'; badge.textContent = 'Recommended';
+        primary.appendChild(badge);
+        if (!recLabel) {
+          const lbl = primary.querySelector('.dl-label'), sub = primary.querySelector('.dl-sub');
+          recLabel = (lbl ? lbl.textContent : '') + (sub ? ' · ' + sub.textContent : '');
+        }
+      }
     });
-  } catch (err) {
-    el.innerHTML = `<div class="state-msg">⚠️ Could not load releases.<br><small>${err.message}</small></div>`;
-  }
-}
 
-loadReleases();
-pollBuilds();
-setInterval(loadReleases, 300000); // releases: every 5 min
-setInterval(pollBuilds,   120000); // build status: every 2 min
-// (kept conservative — GitHub's unauthenticated API allows ~60 req/hr per IP)
+    const osIcon = ICONS[os === 'ios' ? 'apple' : os] || ICONS.package;
+    if (os === 'ios') {
+      banner.innerHTML = `${osIcon} <span>You're on <b>iOS</b> — this project doesn't build for iOS. Get RustDesk from the App Store.</span>`;
+    } else if (recLabel) {
+      banner.innerHTML = `${osIcon} <span>You appear to be on <b>${OS_LABEL[os]}</b> — recommended: <span class="rec-lbl">${recLabel}</span> (highlighted below). Other platforms are dimmed but still downloadable.</span>`;
+    } else {
+      banner.innerHTML = `${osIcon} <span>You appear to be on <b>${OS_LABEL[os]}</b> — that build isn't published for this version yet.</span>`;
+    }
+    banner.classList.add('show');
+  }
+
+  /* ---------------- theme ---------------- */
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    document.getElementById('themeToggle').innerHTML = t === 'dark'
+      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2M12 19.5v2M4.5 4.5l1.4 1.4M18.1 18.1l1.4 1.4M2.5 12h2M19.5 12h2M4.5 19.5l1.4-1.4M18.1 5.9l1.4-1.4"/></svg>'
+      : '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 14.5A8 8 0 0 1 9.5 4 7 7 0 1 0 20 14.5z"/></svg>';
+    try { localStorage.setItem('rd-theme', t); } catch (_) {}
+  }
+  function currentTheme() {
+    try { const s = localStorage.getItem('rd-theme'); if (s) return s; } catch (_) {}
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  function toggleTheme() { applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'); }
+  document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+  document.getElementById('footTheme').addEventListener('click', e => { e.preventDefault(); toggleTheme(); });
+
+  /* ---------------- boot ---------------- */
+  applyTheme(currentTheme());
+  loadReleases();
+  pollBuilds();
+  setInterval(loadReleases, 300000);          // releases: every 5 min
+  setInterval(pollBuilds, 120000);            // build status: every 2 min
+  setInterval(() => { if (activeBuild) paintBanner(); }, 15000); // tick elapsed live
 </script>
 </body>
 </html>
