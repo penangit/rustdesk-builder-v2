@@ -166,7 +166,10 @@ const API  = `https://api.github.com/repos/${REPO}/releases`;
 // Windows/Linux x86_64 slots. Expected filenames the workflows produce:
 //   Windows : RustDesk-x86_64.exe / .msi   |   RustDesk-i686.exe / .msi
 //   Android : RustDesk-aarch64.apk / RustDesk-armv7.apk / RustDesk-x86_64.apk
-//   Linux   : RustDesk-x86_64.deb / .rpm   |   RustDesk-aarch64.deb / .rpm
+//   Linux   : RustDesk-{x86_64,aarch64}.{deb,rpm}  (Fedora rpm has NO 'suse')
+//             RustDesk-suse-{x86_64,aarch64}.rpm   (openSUSE)
+//             RustDesk-{x86_64,aarch64}.{AppImage,flatpak}
+//             RustDesk-x86_64.pkg.tar.zst          (Arch, x86_64 only)
 //   macOS   : RustDesk-x86_64.dmg
 const GROUPS = [
   { name: 'Windows', items: [
@@ -181,10 +184,17 @@ const GROUPS = [
     { label: 'x86_64',          icon: '📱', match: n => /x86_64.*\.apk$/i.test(n) },
   ]},
   { name: 'Linux', items: [
-    { label: 'x86_64 · .deb', icon: '🐧', match: n => /x86_64.*\.deb$/i.test(n) },
-    { label: 'x86_64 · .rpm', icon: '🐧', match: n => /x86_64.*\.rpm$/i.test(n) && !/suse/i.test(n) },
-    { label: 'arm64 · .deb',  icon: '🐧', match: n => /aarch64.*\.deb$/i.test(n) },
-    { label: 'arm64 · .rpm',  icon: '🐧', match: n => /aarch64.*\.rpm$/i.test(n) && !/suse/i.test(n) },
+    { label: 'x86_64 · .deb',        icon: '🐧', match: n => /x86_64.*\.deb$/i.test(n) },
+    { label: 'arm64 · .deb',         icon: '🐧', match: n => /aarch64.*\.deb$/i.test(n) },
+    { label: 'x86_64 · .rpm',        icon: '🐧', match: n => /x86_64.*\.rpm$/i.test(n) && !/suse/i.test(n) },
+    { label: 'arm64 · .rpm',         icon: '🐧', match: n => /aarch64.*\.rpm$/i.test(n) && !/suse/i.test(n) },
+    { label: 'x86_64 · .rpm (SUSE)', icon: '🦎', match: n => /suse.*x86_64.*\.rpm$/i.test(n) },
+    { label: 'arm64 · .rpm (SUSE)',  icon: '🦎', match: n => /suse.*aarch64.*\.rpm$/i.test(n) },
+    { label: 'x86_64 · AppImage',    icon: '📦', match: n => /x86_64.*\.appimage$/i.test(n) },
+    { label: 'arm64 · AppImage',     icon: '📦', match: n => /aarch64.*\.appimage$/i.test(n) },
+    { label: 'x86_64 · flatpak',     icon: '📦', match: n => /x86_64.*\.flatpak$/i.test(n) },
+    { label: 'arm64 · flatpak',      icon: '📦', match: n => /aarch64.*\.flatpak$/i.test(n) },
+    { label: 'x86_64 · Arch (zst)',  icon: '🏛️', match: n => /x86_64.*\.pkg\.tar\.zst$/i.test(n) },
   ]},
   { name: 'macOS', items: [
     { label: 'DMG', icon: '🍎', match: n => /\.dmg$/i.test(n) },
