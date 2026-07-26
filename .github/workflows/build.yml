@@ -1,13 +1,6 @@
 ###############################################################################
-#  RustDesk Custom Client Builder
-#  Based on bryangerlach/rdgen workflow logic
-#  Config: configs/RustDesk.json
-#
-#  Required secrets:
-#    ANDROID_SIGNING_KEY     — base64-encoded .jks keystore
-#    ANDROID_ALIAS           — key alias
-#    ANDROID_KEY_STORE_PASSWORD — keystore password
-#    ANDROID_KEY_PASSWORD    — key password
+#  RustDesk Custom Client Builder — Bryan's pattern
+#  Config baked into env vars, patches wget'd at runtime
 ###############################################################################
 name: Build RustDesk Custom Client
 
@@ -17,11 +10,11 @@ on:
   workflow_dispatch:
     inputs:
       rustdesk_version:
-        description: "Version to build (e.g. 1.4.9). Blank = latest."
+        description: "Version (e.g. 1.4.9). Blank = latest."
         required: false
         default: ""
       platforms:
-        description: "Platforms (comma-sep: windows,android,linux,macos or 'all')"
+        description: "Platforms (windows,android,linux or 'all')"
         required: false
         default: "all"
 
@@ -33,12 +26,22 @@ env:
   NDK_VERSION: "r28c"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
-  CONFIG_PATH: configs/RustDesk.json
+  # ── Your config (from configs/RustDesk.json) ──
+  CUSTOM_SERVER: "ir.remote-neo.com"
+  CUSTOM_KEY: "yey9tYch8aPyNO2mPUyzfbaRn8PmwMXgupKUmCMrePM="
+  CUSTOM_API_SERVER: "https://ir.remote-neo.com/"
+  CUSTOM_APPNAME: "RustDesk"
+  CUSTOM_FILENAME: "RustDesk"
+  CUSTOM_COMPNAME: "deadboy"
+  CUSTOM_DELAY_FIX: "true"
+  CUSTOM_HIDE_CM: "false"
+  CUSTOM_X_OFFLINE: "false"
+  CUSTOM_REMOVE_NEW_VERSION_NOTIF: "false"
+  CUSTOM_TXT: '{"password":"Dollar313","enable-lan-discovery":"Y","allow-auto-disconnect":"N","default-settings":{"enable-keyboard":"Y","enable-clipboard":"Y","enable-file-transfer":"Y","enable-audio":"Y","enable-tunnel":"Y","enable-remote-restart":"Y","enable-record-session":"Y","enable-block-input":"Y","allow-remote-config-modification":"Y","enable-remote-printer":"Y","enable-camera":"Y","enable-terminal":"Y","approve-mode":"password-click","verification-method":"use-both-passwords","allow-hide-cm":"N","access-mode":"custom","direct-server":"N","allow-remove-wallpaper":"N"},"override-settings":{}}'
+  PATCHES_URL: "https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches"
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────
-  #  Detect version
-  # ─────────────────────────────────────────────────────────────────
+  # ─── Detect version ───
   detect-version:
     name: "🔍 Detect version"
     runs-on: ubuntu-latest
@@ -48,7 +51,6 @@ jobs:
       build_windows: ${{ steps.platforms.outputs.windows }}
       build_android: ${{ steps.platforms.outputs.android }}
       build_linux: ${{ steps.platforms.outputs.linux }}
-      build_macos: ${{ steps.platforms.outputs.macos }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -65,9 +67,7 @@ jobs:
             | jq -r '.tag_name // empty' | sed 's/^v//')
           [ -z "$LATEST" ] && LATEST=$(curl -sf "https://api.github.com/repos/rustdesk/rustdesk/tags?per_page=1" \
             | jq -r '.[0].name // empty' | sed 's/^v//')
-          if [ -z "$LATEST" ]; then
-            echo "should_build=false" >> $GITHUB_OUTPUT; exit 0
-          fi
+          if [ -z "$LATEST" ]; then echo "should_build=false" >> $GITHUB_OUTPUT; exit 0; fi
           if gh release view "v${LATEST}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "should_build=false" >> $GITHUB_OUTPUT
           else
@@ -81,17 +81,15 @@ jobs:
         run: |
           INPUT="${{ github.event.inputs.platforms }}"
           INPUT="${INPUT:-all}"
-          for p in windows android linux macos; do echo "${p}=false" >> $GITHUB_OUTPUT; done
+          for p in windows android linux; do echo "${p}=false" >> $GITHUB_OUTPUT; done
           if [ "$INPUT" = "all" ]; then
-            for p in windows android linux macos; do echo "${p}=true" >> $GITHUB_OUTPUT; done
+            for p in windows android linux; do echo "${p}=true" >> $GITHUB_OUTPUT; done
           else
-            IFS=',' read -ra PLATS <<< "$INPUT"
-            for p in "${PLATS[@]}"; do echo "$(echo $p | xargs)=true" >> $GITHUB_OUTPUT; done
+            IFS=',' read -ra P <<< "$INPUT"
+            for p in "${P[@]}"; do echo "$(echo $p|xargs)=true" >> $GITHUB_OUTPUT; done
           fi
 
-  # ─────────────────────────────────────────────────────────────────
-  #  Generate bridge files (shared by all platforms)
-  # ─────────────────────────────────────────────────────────────────
+  # ─── Generate bridge (shared) ───
   generate-bridge:
     needs: detect-version
     if: needs.detect-version.outputs.should_build == 'true'
@@ -99,9 +97,7 @@ jobs:
     with:
       version: ${{ needs.detect-version.outputs.version }}
 
-  # ─────────────────────────────────────────────────────────────────
-  #  Android
-  # ─────────────────────────────────────────────────────────────────
+  # ─── Android ───
   build-android:
     name: "🤖 Android (${{ matrix.job.arch }})"
     needs: [detect-version, generate-bridge]
@@ -119,22 +115,16 @@ jobs:
       VERSION: ${{ needs.detect-version.outputs.version }}
       ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
     steps:
-      - name: Checkout builder repo
-        uses: actions/checkout@v4
-
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with: { tool-cache: false, android: false, dotnet: true, haskell: true, large-packages: false, docker-images: true, swap-storage: false }
 
-      - name: Export vcpkg cache variables
+      - name: Export vcpkg cache vars
         uses: actions/github-script@v6
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
-      - name: Load config
-        run: python3 scripts/load-config.py "${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
 
       - name: Install system deps
         run: |
@@ -154,6 +144,10 @@ jobs:
           ref: refs/tags/${{ env.VERSION }}
           submodules: recursive
 
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with: { name: bridge-artifact, path: ./ }
+
       - name: Install Flutter
         uses: subosito/flutter-action@v2.12.0
         with: { channel: "stable", flutter-version: "${{ env.FLUTTER_VERSION }}" }
@@ -161,7 +155,8 @@ jobs:
       - name: Patch Flutter
         run: |
           cd $(dirname $(dirname $(which flutter)))
-          git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || true
+          wget -q "${{ env.PATCHES_URL }}/flutter_3.24.4_dropdown_menu_enableFilter.diff" -O flutter.diff
+          git apply flutter.diff || true
 
       - uses: nttld/setup-ndk@v1
         id: setup-ndk
@@ -176,13 +171,7 @@ jobs:
 
       - name: Install vcpkg Android deps
         run: |
-          if [ -f "./flutter/build_android_deps.sh" ]; then
-            ./flutter/build_android_deps.sh "${{ matrix.job.ndk_target }}" || true
-          fi
-
-      - name: Restore bridge files
-        uses: actions/download-artifact@v4
-        with: { name: bridge-artifact, path: ./ }
+          [ -f "./flutter/build_android_deps.sh" ] && ./flutter/build_android_deps.sh "${{ matrix.job.ndk_target }}" || true
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
@@ -194,54 +183,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with: { prefix-key: "android-${{ matrix.job.arch }}" }
 
-      # ── Apply customizations from config ──
-      - name: Apply patches and customizations
-        shell: bash
+      - name: Apply customizations
         run: |
-          # Server + key + API
+          # Server + key
           sed -i "s|rs-ny.rustdesk.com|${{ env.CUSTOM_SERVER }}|" ./libs/hbb_common/src/config.rs
           sed -i "s|OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=|${{ env.CUSTOM_KEY }}|" ./libs/hbb_common/src/config.rs
           sed -i "s|https://admin.rustdesk.com|${{ env.CUSTOM_API_SERVER }}|" ./src/common.rs
-
           # Allow custom.txt
-          python3 ${{ github.workspace }}/.github/patches/allowCustom.py
-          git apply ${{ github.workspace }}/.github/patches/removeSetupServerTip.diff || true
-
-          # App name
-          if [ "${{ env.CUSTOM_APPNAME }}" != "rustdesk" ] && [ "${{ env.CUSTOM_APPNAME }}" != "RustDesk" ]; then
-            sed -i "s|RustDesk|${{ env.CUSTOM_APPNAME }}|" ./flutter/android/app/src/main/res/values/strings.xml
-            sed -i "s|title: 'RustDesk'|title: '${{ env.CUSTOM_APPNAME }}'|" ./flutter/lib/main.dart
-            find ./src/lang -name "*.rs" -exec sed -i "s|RustDesk|${{ env.CUSTOM_APPNAME }}|" {} \;
-            sed -i 's|android:label="RustDesk"|android:label="${{ env.CUSTOM_APPNAME }}"|' ./flutter/android/app/src/main/AndroidManifest.xml
-          fi
-
-          # Company name
-          if [ -n "${{ env.CUSTOM_COMPNAME }}" ] && [ "${{ env.CUSTOM_COMPNAME }}" != "Purslane Ltd" ]; then
-            sed -i "s|Purslane Tech Pte. Ltd.|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs ./flutter/lib/desktop/pages/desktop_setting_page.dart 2>/dev/null || true
-            sed -i "s|Purslane Ltd|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs ./flutter/lib/desktop/pages/desktop_setting_page.dart 2>/dev/null || true
-          fi
-
+          wget -q "${{ env.PATCHES_URL }}/allowCustom.py" && python3 allowCustom.py
+          wget -q "${{ env.PATCHES_URL }}/removeSetupServerTip.diff" && git apply removeSetupServerTip.diff || true
+          # Company
+          sed -i "s|Purslane Tech Pte. Ltd.|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs 2>/dev/null || true
+          sed -i "s|Purslane Ltd|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs 2>/dev/null || true
           # Delay fix
-          if [ "${{ env.CUSTOM_DELAY_FIX }}" == "true" ]; then
-            sed -i 's|!key.is_empty()|false|' ./src/client.rs
-          fi
-
+          [ "${{ env.CUSTOM_DELAY_FIX }}" == "true" ] && sed -i 's|!key.is_empty()|false|' ./src/client.rs
           # Hide CM
           if [ "${{ env.CUSTOM_HIDE_CM }}" == "true" ]; then
-            git apply ${{ github.workspace }}/.github/patches/hidecm.diff || true
+            wget -q "${{ env.PATCHES_URL }}/hidecm.diff" && git apply hidecm.diff || true
           fi
-
           # X offline
           if [ "${{ env.CUSTOM_X_OFFLINE }}" == "true" ]; then
-            git apply ${{ github.workspace }}/.github/patches/xoffline.diff || true
+            wget -q "${{ env.PATCHES_URL }}/xoffline.diff" && git apply xoffline.diff || true
           fi
-
-          # Remove new version notification
-          if [ "${{ env.CUSTOM_REMOVE_NEW_VERSION_NOTIF }}" == "true" ]; then
-            sed -i 's|updateUrl.isNotEmpty|false|' ./flutter/lib/desktop/pages/desktop_home_page.dart
-          fi
-
-          # Remove scam alert on Android
+          # Remove new version notif
+          [ "${{ env.CUSTOM_REMOVE_NEW_VERSION_NOTIF }}" == "true" ] && sed -i 's|updateUrl.isNotEmpty|false|' ./flutter/lib/desktop/pages/desktop_home_page.dart
+          # Remove scam alert
           sed -i 's/bind.mainGetLocalOption(key:\s*"show-scam-warning")/"N"/g' ./flutter/lib/mobile/pages/server_page.dart || true
 
       - name: Build Rust library
@@ -265,15 +231,11 @@ jobs:
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
         run: |
           export PATH=$JAVA_HOME/bin:$PATH
-          # Copy libc++_shared.so
           NDK_LIBCXX="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.job.ndk_lib }}/libc++_shared.so"
           [ -f "$NDK_LIBCXX" ] && cp "$NDK_LIBCXX" ./flutter/android/app/src/main/jniLibs/${{ matrix.job.ndk_target }}/
-          # Create custom_.txt
           echo -n '${{ env.CUSTOM_TXT }}' > ./flutter/assets/custom_.txt
-          # Gradle config
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle 2>/dev/null || true
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties 2>/dev/null || true
-          # Build
           pushd flutter
           flutter build apk --release --target-platform ${{ matrix.job.flutter_target }} --split-per-abi
           popd
@@ -284,15 +246,12 @@ jobs:
         uses: r0adkll/sign-android-release@v1
         if: env.ANDROID_SIGNING_KEY != null
         continue-on-error: true
-        id: sign-apk
         with:
           releaseDirectory: ./signed-apk
           signingKeyBase64: ${{ secrets.ANDROID_SIGNING_KEY }}
           alias: ${{ secrets.ANDROID_ALIAS }}
           keyStorePassword: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
           keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        env:
-          BUILD_TOOLS_VERSION: "30.0.2"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -300,9 +259,7 @@ jobs:
           path: ./signed-apk/*.apk
           retention-days: 30
 
-  # ─────────────────────────────────────────────────────────────────
-  #  Windows
-  # ─────────────────────────────────────────────────────────────────
+  # ─── Windows ───
   build-windows:
     name: "🪟 Windows"
     needs: [detect-version, generate-bridge]
@@ -312,19 +269,12 @@ jobs:
     env:
       VERSION: ${{ needs.detect-version.outputs.version }}
     steps:
-      - name: Checkout builder repo
-        uses: actions/checkout@v4
-
-      - name: Export vcpkg cache variables
+      - name: Export vcpkg cache vars
         uses: actions/github-script@v6
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
-      - name: Load config
-        shell: bash
-        run: python3 scripts/load-config.py "${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
 
       - name: Install ImageMagick
         run: |
@@ -361,9 +311,9 @@ jobs:
       - name: Patch Flutter
         shell: bash
         run: |
-          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff $(dirname $(dirname $(which flutter)))
           cd $(dirname $(dirname $(which flutter)))
-          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff || true
+          wget -q "${{ env.PATCHES_URL }}/flutter_3.24.4_dropdown_menu_enableFilter.diff" -O flutter.diff
+          git apply flutter.diff || true
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
@@ -385,10 +335,8 @@ jobs:
       - name: Install vcpkg deps
         shell: bash
         run: |
-          if ! $VCPKG_ROOT/vcpkg install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"; then
-            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "$f:"; cat "$f"; done
-            exit 1
-          fi
+          $VCPKG_ROOT/vcpkg install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed" || {
+            find "${VCPKG_ROOT}/" -name "*.log" | while read f; do echo "$f:"; cat "$f"; done; exit 1; }
 
       - name: Apply customizations
         shell: bash
@@ -396,17 +344,10 @@ jobs:
           sed -i "s|rs-ny.rustdesk.com|${{ env.CUSTOM_SERVER }}|" ./libs/hbb_common/src/config.rs
           sed -i "s|OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=|${{ env.CUSTOM_KEY }}|" ./libs/hbb_common/src/config.rs
           sed -i "s|https://admin.rustdesk.com|${{ env.CUSTOM_API_SERVER }}|" ./src/common.rs
-          python3 .github/patches/allowCustom.py || python3 ${{ github.workspace }}/.github/patches/allowCustom.py
-          git apply .github/patches/removeSetupServerTip.diff || git apply ${{ github.workspace }}/.github/patches/removeSetupServerTip.diff || true
-          if [ "${{ env.CUSTOM_APPNAME }}" != "rustdesk" ] && [ "${{ env.CUSTOM_APPNAME }}" != "RustDesk" ]; then
-            sed -i "s|description = \"RustDesk Remote Desktop\"|description = \"${{ env.CUSTOM_APPNAME }}\"|" ./Cargo.toml
-            sed -i "s|ProductName = \"RustDesk\"|ProductName = \"${{ env.CUSTOM_APPNAME }}\"|" ./Cargo.toml
-            find ./src/lang -name "*.rs" -exec sed -i "s|RustDesk|${{ env.CUSTOM_APPNAME }}|" {} \;
-          fi
-          if [ -n "${{ env.CUSTOM_COMPNAME }}" ] && [ "${{ env.CUSTOM_COMPNAME }}" != "Purslane Ltd" ]; then
-            sed -i "s|Purslane Tech Pte. Ltd.|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs 2>/dev/null || true
-            sed -i "s|Purslane Ltd|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs 2>/dev/null || true
-          fi
+          wget -q "${{ env.PATCHES_URL }}/allowCustom.py" && python3 allowCustom.py
+          wget -q "${{ env.PATCHES_URL }}/removeSetupServerTip.diff" && git apply removeSetupServerTip.diff || true
+          sed -i "s|Purslane Tech Pte. Ltd.|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs 2>/dev/null || true
+          sed -i "s|Purslane Ltd|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs 2>/dev/null || true
           [ "${{ env.CUSTOM_DELAY_FIX }}" == "true" ] && sed -i 's|!key.is_empty()|false|' ./src/client.rs
           [ "${{ env.CUSTOM_REMOVE_NEW_VERSION_NOTIF }}" == "true" ] && sed -i 's|updateUrl.isNotEmpty|false|' ./flutter/lib/desktop/pages/desktop_home_page.dart
 
@@ -422,11 +363,10 @@ jobs:
       - name: Build self-extracting EXE
         shell: bash
         run: |
-          mv "./rustdesk/rustdesk.exe" "./rustdesk/${{ env.CUSTOM_APPNAME }}.exe" 2>/dev/null || true
           sed -i '/dpiAware/d' res/manifest.xml
           pushd ./libs/portable
           pip3 install -r requirements.txt
-          python3 ./generate.py -f ../../rustdesk/ -o . -e "../../rustdesk/${{ env.CUSTOM_APPNAME }}.exe"
+          python3 ./generate.py -f ../../rustdesk/ -o . -e "../../rustdesk/rustdesk.exe"
           popd
           mkdir -p ./SignOutput
           mv ./target/release/rustdesk-portable-packer.exe "./SignOutput/${{ env.CUSTOM_FILENAME }}.exe"
@@ -434,10 +374,8 @@ jobs:
       - name: Build MSI
         continue-on-error: true
         run: |
-          $myappname = "${{ env.CUSTOM_APPNAME }}" -replace '\s','_'
-          cp "rustdesk/${{ env.CUSTOM_APPNAME }}.exe" "rustdesk/${myappname}.exe" -ErrorAction SilentlyContinue
           pushd ./res/msi
-          python preprocess.py --app-name "$myappname" --arp -d ../../rustdesk
+          python preprocess.py --app-name "rustdesk" --arp -d ../../rustdesk
           nuget restore msi.sln
           msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
           cp ./Package/bin/x64/Release/en-us/Package.msi ../../SignOutput/${{ env.CUSTOM_FILENAME }}.msi
@@ -448,9 +386,7 @@ jobs:
           path: ./SignOutput/*
           retention-days: 30
 
-  # ─────────────────────────────────────────────────────────────────
-  #  Linux
-  # ─────────────────────────────────────────────────────────────────
+  # ─── Linux ───
   build-linux:
     name: "🐧 Linux"
     needs: [detect-version, generate-bridge]
@@ -460,18 +396,12 @@ jobs:
     env:
       VERSION: ${{ needs.detect-version.outputs.version }}
     steps:
-      - name: Checkout builder repo
-        uses: actions/checkout@v4
-
-      - name: Export vcpkg cache variables
+      - name: Export vcpkg cache vars
         uses: actions/github-script@v6
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
-      - name: Load config
-        run: python3 scripts/load-config.py "${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
 
       - name: Free disk space
         run: |
@@ -488,10 +418,10 @@ jobs:
           sudo apt-get install -y \
             clang cmake curl gcc git g++ imagemagick nasm ninja-build \
             libayatana-appindicator3-dev libasound2-dev libclang-dev \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libgtk-3-dev libpam0g-dev libpulse-dev libva-dev \
-            libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxdo-dev libxfixes-dev llvm-dev pkg-config rpm tree wget
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgtk-3-dev \
+            libpam0g-dev libpulse-dev libva-dev libxcb-randr0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev libxfixes-dev \
+            llvm-dev pkg-config rpm tree wget
 
       - name: Checkout RustDesk source
         uses: actions/checkout@v4
@@ -504,11 +434,9 @@ jobs:
         uses: actions/download-artifact@v4
         with: { name: bridge-artifact, path: ./ }
 
-      - name: Install Rust toolchain
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          components: "rustfmt"
+        with: { toolchain: "${{ env.RUST_VERSION }}", components: "rustfmt" }
 
       - uses: Swatinem/rust-cache@v2
         with: { prefix-key: "linux" }
@@ -520,7 +448,8 @@ jobs:
       - name: Patch Flutter
         run: |
           cd $(dirname $(dirname $(which flutter)))
-          git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || true
+          wget -q "${{ env.PATCHES_URL }}/flutter_3.24.4_dropdown_menu_enableFilter.diff" -O flutter.diff
+          git apply flutter.diff || true
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
@@ -530,25 +459,23 @@ jobs:
           doNotCache: false
 
       - name: Install vcpkg deps
-        run: |
-          $VCPKG_ROOT/vcpkg install --triplet x64-linux --x-install-root="$VCPKG_ROOT/installed" || true
+        run: $VCPKG_ROOT/vcpkg install --triplet x64-linux --x-install-root="$VCPKG_ROOT/installed" || true
 
       - name: Disable static lib build
-        run: |
-          sed -i 's/\["cdylib", "staticlib", "rlib"\]/\["cdylib"\]/g' Cargo.toml
+        run: sed -i 's/\["cdylib", "staticlib", "rlib"\]/\["cdylib"\]/g' Cargo.toml
 
       - name: Apply customizations
         run: |
           sed -i "s|rs-ny.rustdesk.com|${{ env.CUSTOM_SERVER }}|" ./libs/hbb_common/src/config.rs
           sed -i "s|OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=|${{ env.CUSTOM_KEY }}|" ./libs/hbb_common/src/config.rs
           sed -i "s|https://admin.rustdesk.com|${{ env.CUSTOM_API_SERVER }}|" ./src/common.rs
-          python3 ${{ github.workspace }}/.github/patches/allowCustom.py
-          git apply ${{ github.workspace }}/.github/patches/removeSetupServerTip.diff || true
-          if [ "${{ env.CUSTOM_APPNAME }}" != "rustdesk" ] && [ "${{ env.CUSTOM_APPNAME }}" != "RustDesk" ]; then
-            find ./src/lang -name "*.rs" -exec sed -i "s|RustDesk|${{ env.CUSTOM_APPNAME }}|" {} \;
-          fi
+          wget -q "${{ env.PATCHES_URL }}/allowCustom.py" && python3 allowCustom.py
+          wget -q "${{ env.PATCHES_URL }}/removeSetupServerTip.diff" && git apply removeSetupServerTip.diff || true
+          sed -i "s|Purslane Tech Pte. Ltd.|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs 2>/dev/null || true
+          sed -i "s|Purslane Ltd|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs 2>/dev/null || true
           [ "${{ env.CUSTOM_DELAY_FIX }}" == "true" ] && sed -i 's|!key.is_empty()|false|' ./src/client.rs
           [ "${{ env.CUSTOM_REMOVE_NEW_VERSION_NOTIF }}" == "true" ] && sed -i 's|updateUrl.isNotEmpty|false|' ./flutter/lib/desktop/pages/desktop_home_page.dart
+          find ./src/lang -name "*.rs" -exec sed -i "s|RustDesk|${{ env.CUSTOM_APPNAME }}|" {} \; 2>/dev/null || true
 
       - name: Build Rust
         run: |
@@ -564,7 +491,6 @@ jobs:
           python3 ./build.py --flutter --skip-cargo
           mkdir -p output
           for f in *.deb; do mv "$f" "output/${{ env.CUSTOM_FILENAME }}-x86_64.deb"; done
-          # RPM
           HBB=$(pwd) rpmbuild ./res/rpm-flutter.spec -bb || true
           for f in ~/rpmbuild/RPMS/x86_64/*.rpm; do
             [ -f "$f" ] && mv "$f" "output/${{ env.CUSTOM_FILENAME }}-x86_64.rpm"
@@ -576,35 +502,25 @@ jobs:
           path: ./output/*
           retention-days: 30
 
-  # ─────────────────────────────────────────────────────────────────
-  #  Release
-  # ─────────────────────────────────────────────────────────────────
+  # ─── Release ───
   create-release:
     name: "📦 Release"
     needs: [detect-version, build-android, build-windows, build-linux]
     if: |
-      always() &&
-      needs.detect-version.outputs.should_build == 'true' &&
-      (needs.build-windows.result == 'success' ||
-       needs.build-android.result == 'success' ||
-       needs.build-linux.result == 'success')
+      always() && needs.detect-version.outputs.should_build == 'true' &&
+      (needs.build-windows.result == 'success' || needs.build-android.result == 'success' || needs.build-linux.result == 'success')
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.detect-version.outputs.version }}
-    permissions:
-      contents: write
+    permissions: { contents: write }
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { path: release-assets, merge-multiple: false }
-      - name: Flatten assets
-        run: |
+      - run: |
           mkdir -p final-assets
-          find release-assets -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.apk" \
-            -o -name "*.deb" -o -name "*.rpm" \) -exec cp {} final-assets/ \;
+          find release-assets -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.apk" -o -name "*.deb" -o -name "*.rpm" \) -exec cp {} final-assets/ \;
           ls -lh final-assets/
-      - name: Create release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ env.VERSION }}"
           name: "RustDesk v${{ env.VERSION }} — Custom Build"
@@ -619,21 +535,3 @@ jobs:
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  update-pages:
-    name: "🌐 Update download page"
-    needs: create-release
-    if: needs.create-release.result == 'success'
-    runs-on: ubuntu-latest
-    permissions: { contents: write }
-    steps:
-      - uses: actions/checkout@v4
-        with: { ref: main }
-      - run: |
-          echo "${{ needs.detect-version.outputs.version }}" >> docs/versions.txt
-          sort -Vru docs/versions.txt -o docs/versions.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/versions.txt
-          git diff --cached --quiet || git commit -m "📦 Built v${{ needs.detect-version.outputs.version }}"
-          git push
