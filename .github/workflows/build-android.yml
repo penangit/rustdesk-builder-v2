@@ -1,0 +1,540 @@
+###############################################################################
+#  RustDesk Custom Client Builder — ANDROID
+#  Config: configs/RustDesk.json  (loaded via scripts/load-config.py)
+#
+#  Produces signed APKs:  RustDesk-<version>-{aarch64,armv7,x86_64}.apk
+#  Signed with YOUR keystore via the repo secrets:
+#     ANDROID_SIGNING_KEY  ANDROID_ALIAS  ANDROID_KEY_STORE_PASSWORD  ANDROID_KEY_PASSWORD
+#
+#  Adapted from bryangerlach/rdgen's Android generator. Differences:
+#   • Manual dispatch; config from configs/RustDesk.json (no encrypted-secrets zip)
+#     via a "Map config → build env" shim re-exporting CUSTOM_* under rdgen names.
+#   • rdgen server upload replaced with a GitHub release + changelog mirror.
+#   • Whitelabel gated to skip for rustdesk/RustDesk (stock internals for this config).
+#
+#  NOTE: this build removes RustDesk's on-device "scam warning" prompt (standard for
+#  custom self-hosted clients — the generic warning is confusing for an internal tool).
+#  Only appropriate because these clients are for your own ir.remote-neo.com deployment.
+###############################################################################
+name: "🤖 Build Android"
+
+on:
+  workflow_dispatch:
+    inputs:
+      rustdesk_version:
+        description: "Version to build (e.g. 1.4.9). Blank = latest."
+        required: false
+        default: ""
+      force_build:
+        description: "Build even if release exists (keep 'true' to add to an existing version)"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+env:
+  RUST_VERSION: "1.75"
+  CARGO_NDK_VERSION: "3.1.2"
+  LLVM_VERSION: "15.0.6"
+  FLUTTER_VERSION: "3.24.5"
+  ANDROID_FLUTTER_VERSION: "3.24.5"
+  FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  NDK_VERSION: "r28c"
+  # bridge (matches your working Linux/Windows builds)
+  CARGO_EXPAND_VERSION: "1.0.95"
+  BRIDGE_FLUTTER_VERSION: "3.22.3"
+  CONFIG_PATH: configs/RustDesk.json
+  ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  detect-version:
+    name: "🔍 Detect version"
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MANUAL="${{ github.event.inputs.rustdesk_version }}"
+          FORCE="${{ github.event.inputs.force_build }}"
+          if [ -n "$MANUAL" ]; then
+            echo "version=$MANUAL" >> $GITHUB_OUTPUT
+            if [ "$FORCE" = "true" ]; then echo "should_build=true" >> $GITHUB_OUTPUT
+            elif gh release view "v${MANUAL}" --repo "${{ github.repository }}" >/dev/null 2>&1; then echo "should_build=false" >> $GITHUB_OUTPUT
+            else echo "should_build=true" >> $GITHUB_OUTPUT; fi
+            exit 0
+          fi
+          LATEST=$(curl -sf "https://api.github.com/repos/rustdesk/rustdesk/releases/latest" | jq -r '.tag_name // empty' | sed 's/^v//')
+          [ -z "$LATEST" ] && LATEST=$(curl -sf "https://api.github.com/repos/rustdesk/rustdesk/tags?per_page=1" | jq -r '.[0].name // empty' | sed 's/^v//')
+          if [ -z "$LATEST" ]; then echo "::error::Could not determine latest RustDesk version"; echo "should_build=false" >> $GITHUB_OUTPUT; exit 0; fi
+          if [ "$FORCE" = "true" ]; then echo "version=$LATEST" >> $GITHUB_OUTPUT; echo "should_build=true" >> $GITHUB_OUTPUT
+          elif gh release view "v${LATEST}" --repo "${{ github.repository }}" >/dev/null 2>&1; then echo "should_build=false" >> $GITHUB_OUTPUT
+          else echo "version=$LATEST" >> $GITHUB_OUTPUT; echo "should_build=true" >> $GITHUB_OUTPUT; fi
+
+  # ─────────────────────────────────────────────────────────────────
+  generate-bridge:
+    name: "🌉 Generate bridge"
+    needs: detect-version
+    if: needs.detect-version.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - name: Checkout RustDesk source
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: refs/tags/${{ env.VERSION }}
+          submodules: recursive
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang cmake curl gcc git g++ libclang-dev libgtk-3-dev llvm-dev nasm ninja-build pkg-config wget
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: "rustfmt"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: bridge
+      - name: Install Flutter (bridge version)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.BRIDGE_FLUTTER_VERSION }}
+          cache: true
+      - name: Install bridge codegen
+        run: |
+          cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
+          cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
+          pushd flutter
+          sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' pubspec.yaml
+          flutter pub get
+          popd
+      - name: Run flutter_rust_bridge_codegen
+        run: |
+          ~/.cargo/bin/flutter_rust_bridge_codegen \
+            --rust-input ./src/flutter_ffi.rs \
+            --dart-output ./flutter/lib/generated_bridge.dart \
+            --c-output ./flutter/macos/Runner/bridge_generated.h
+          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+      - name: Upload bridge artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-artifact
+          path: |
+            ./src/bridge_generated.rs
+            ./src/bridge_generated.io.rs
+            ./flutter/lib/generated_bridge.dart
+            ./flutter/lib/generated_bridge.freezed.dart
+            ./flutter/macos/Runner/bridge_generated.h
+            ./flutter/ios/Runner/bridge_generated.h
+
+  # ─────────────────────────────────────────────────────────────────
+  build-rustdesk-android:
+    needs: [detect-version, generate-bridge]
+    if: needs.detect-version.outputs.should_build == 'true'
+    name: "🤖 APK ${{ matrix.job.arch }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { arch: aarch64, target: aarch64-linux-android,     android_target: arm64-v8a,   flutter_target: android-arm64, abi_dir: arm64-v8a,   ndk: ndk_arm64.sh, jni: aarch64-linux-android }
+          - { arch: armv7,   target: armv7-linux-androideabi,    android_target: armeabi-v7a, flutter_target: android-arm,   abi_dir: armeabi-v7a, ndk: ndk_arm.sh,   jni: arm-linux-androideabi }
+          - { arch: x86_64,  target: x86_64-linux-android,       android_target: x86_64,      flutter_target: android-x64,   abi_dir: x86_64,      ndk: ndk_x64.sh,   jni: x86_64-linux-android }
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - name: Checkout RustDesk source
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: refs/tags/${{ env.VERSION }}
+          submodules: recursive
+
+      - name: Checkout builder repo
+        uses: actions/checkout@v4
+        with:
+          path: builder
+
+      - name: Load config
+        run: python3 builder/scripts/load-config.py "builder/${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
+
+      - name: Map config → build env
+        run: |
+          echo "appname=${{ env.CUSTOM_APPNAME }}" >> $GITHUB_ENV
+          echo "filename=${{ env.CUSTOM_FILENAME }}" >> $GITHUB_ENV
+          echo "compname=${{ env.CUSTOM_COMPNAME }}" >> $GITHUB_ENV
+          echo "server=${{ env.CUSTOM_SERVER }}" >> $GITHUB_ENV
+          echo "key=${{ env.CUSTOM_KEY }}" >> $GITHUB_ENV
+          echo "apiServer=${{ env.CUSTOM_API_SERVER }}" >> $GITHUB_ENV
+          echo "urlLink=${{ env.CUSTOM_URL_LINK }}" >> $GITHUB_ENV
+          echo "downloadLink=${{ env.CUSTOM_DOWNLOAD_LINK }}" >> $GITHUB_ENV
+          echo "androidappid=${{ env.CUSTOM_ANDROID_APP_ID }}" >> $GITHUB_ENV
+          echo "delayFix=${{ env.CUSTOM_DELAY_FIX }}" >> $GITHUB_ENV
+          echo "xOffline=${{ env.CUSTOM_X_OFFLINE }}" >> $GITHUB_ENV
+          echo "hidecm=${{ env.CUSTOM_HIDE_CM }}" >> $GITHUB_ENV
+          echo "removeNewVersionNotif=${{ env.CUSTOM_REMOVE_NEW_VERSION_NOTIF }}" >> $GITHUB_ENV
+          echo "iconlink_url=false" >> $GITHUB_ENV
+
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake curl gcc-multilib git g++ g++-multilib imagemagick \
+            libayatana-appindicator3-dev libasound2-dev libc6-dev libclang-dev \
+            libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgtk-3-dev libpam0g-dev libpulse-dev libva-dev libvdpau-dev \
+            libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev \
+            libxfixes-dev llvm-dev nasm ninja-build openjdk-17-jdk-headless \
+            pkg-config tree wget
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.ANDROID_FLUTTER_VERSION }}
+
+      - name: Patch flutter
+        continue-on-error: true
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          [[ "3.24.5" == "${{ env.ANDROID_FLUTTER_VERSION }}" ]] && git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || echo "flutter patch N/A"
+
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies (android)
+        shell: bash
+        run: |
+          if ! ./flutter/build_android_deps.sh "${{ matrix.job.android_target }}"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"; echo "======"; cat "$_1"; echo "======"; echo ""
+            done
+            exit 1
+          fi
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: rustdesk-lib-cache-android
+          key: ${{ matrix.job.target }}
+
+      # ── customizations (before build) ──
+      - name: Set server, key, and apiServer
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i -e 's|rs-ny.rustdesk.com|${{ env.server }}|' ./libs/hbb_common/src/config.rs
+          sed -i -e 's|OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=|${{ env.key }}|' ./libs/hbb_common/src/config.rs
+          sed -i -e 's|https://admin.rustdesk.com|${{ env.apiServer }}|' ./src/common.rs
+
+      - name: Change appname to custom (skipped for stock rustdesk/RustDesk)
+        if: ${{ env.appname != 'rustdesk' && env.appname != 'RustDesk' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i -e 's|description = "RustDesk Remote Desktop"|description = "${{ env.appname }}"|' ./Cargo.toml
+          sed -i 's|name = "RustDesk"|name = "${{ env.appname }}"|' ./Cargo.toml
+          find ./src/lang -name "*.rs" -exec sed -i -e 's|RustDesk|${{ env.appname }}|' {} \;
+          sed -i -e 's|RustDesk|${{ env.appname }}|' ./flutter/android/app/src/main/res/values/strings.xml
+          sed -i -e "s|title: 'RustDesk'|title: '${{ env.appname }}'|" ./flutter/lib/main.dart
+          sed -i 's|android:label="RustDesk"|android:label="${{ env.appname }}"|' ./flutter/android/app/src/main/AndroidManifest.xml
+          sed -i 's|android:label="RustDesk Input"|android:label="${{ env.appname }} Input"|' ./flutter/android/app/src/main/AndroidManifest.xml
+          sed -i 's|RustDesk is Open|${{ env.appname }} is Open|' ./flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/BootReceiver.kt
+          sed -i 's|Show Rustdesk|Show ${{ env.appname }}|' ./flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/FloatingWindowService.kt
+          sed -i 's|"RustDesk"|"${{ env.appname }}"|' ./flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainService.kt
+          sed -i 's|"RustDesk Service|"${{ env.appname }} Service|' ./flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainService.kt
+          sed -i 's|RustDesk|${{ env.appname }}|' ./flutter/lib/main.dart
+          sed -i 's|"RustDesk"|"${{ env.appname }}"|' ./libs/hbb_common/src/config.rs
+
+      - name: Change company name
+        if: env.compname != 'Purslane Ltd'
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i -e 's|Purslane Tech Pte. Ltd.|${{ env.compname }}|' ./flutter/lib/desktop/pages/desktop_setting_page.dart
+          sed -i -e 's|Purslane Tech Pte. Ltd.|${{ env.compname }}|' ./Cargo.toml
+          sed -i -e 's|Purslane Ltd|${{ env.compname }}|' ./Cargo.toml
+          sed -i -e 's|Purslane Ltd|${{ env.compname }}|' ./src/main.rs
+
+      - name: Change url to custom
+        if: env.urlLink != 'https://rustdesk.com'
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i -e "s|launchUrl(Uri.parse('https://rustdesk.com'));|launchUrl(Uri.parse('${{ env.urlLink }}'));|" ./flutter/lib/common.dart
+          sed -i -e "s|const url = 'https://rustdesk.com/';|const url = '${{ env.urlLink }}';|" ./flutter/lib/mobile/pages/settings_page.dart
+          sed -i -e "s|child: Text('rustdesk.com',|child: Text('${{ env.urlLink }}',|" ./flutter/lib/mobile/pages/settings_page.dart
+
+      - name: Change android app id to custom
+        if: ${{ env.androidappid != '' && env.androidappid != 'com.carriez.flutter_hbb' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i -e 's|com.carriez.flutter_hbb|${{ env.androidappid }}|' ./flutter/android/app/build.gradle
+
+      - name: Change download link to custom
+        if: env.downloadLink != 'https://rustdesk.com/download'
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i -e 's|https://rustdesk.com/download|${{ env.downloadLink }}|' ./flutter/lib/mobile/pages/connection_page.dart
+
+      - name: Allow custom.txt (strip signature check)
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i -e '/const KEY:/,/};/d' ./src/common.rs
+          sed -i -e '/let Ok(data) = sign::verify(&data, &pk)/,/};/d' ./src/common.rs
+
+      - name: Remove scam alert on Android
+        shell: bash
+        run: |
+          sed -i 's/bind.mainGetLocalOption(key:\s*"show-scam-warning")/"N"/g' ./flutter/lib/mobile/pages/server_page.dart
+
+      - name: Fix connection delay
+        if: ${{ env.delayFix == 'true' }}
+        continue-on-error: true
+        shell: bash
+        run: sed -i -e 's|!key.is_empty()|false|' ./src/client.rs
+
+      - name: Use X for offline display
+        if: env.xOffline == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          wget -q https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/xoffline.diff
+          git apply xoffline.diff || echo "xoffline N/A"
+
+      - name: hide-cm
+        if: env.hidecm == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          wget -q https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/hidecm.diff
+          git apply hidecm.diff || echo "hidecm N/A"
+
+      - name: removeNewVersionNotif
+        if: env.removeNewVersionNotif == 'true'
+        continue-on-error: true
+        run: |
+          sed -i '/let (request, url) =/,/Ok(())/{/Ok(())/!d}' ./src/common.rs
+
+      # ── build the rust library for this arch ──
+      - name: Build rustdesk lib
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          rustup target add ${{ matrix.job.target }}
+          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
+          ./flutter/${{ matrix.job.ndk }}
+          mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}
+          cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}/librustdesk.so
+
+      # ── build the flutter APK (embeds custom_.txt) ──
+      - name: Build APK
+        shell: bash
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          # bump gradle heap; use the debug signing slot for the gradle build (we re-sign after)
+          sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
+          sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+          # baked config (password + permissions + approve-mode) as a bundled asset
+          echo -n '${{ env.CUSTOM_TXT }}' > ./flutter/assets/custom_.txt
+          # native runtime libs
+          mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}
+          cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.job.jni }}/libc++_shared.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}/
+          cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}/librustdesk.so
+          pushd flutter
+          flutter build apk --release --target-platform ${{ matrix.job.flutter_target }} --split-per-abi
+          popd
+          mkdir -p signed-apk
+          mv ./flutter/build/app/outputs/flutter-apk/app-${{ matrix.job.abi_dir }}-release.apk \
+             ./signed-apk/${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
+
+      # ── sign with YOUR keystore ──
+      - uses: r0adkll/sign-android-release@v1
+        name: Sign APK
+        id: sign
+        if: env.ANDROID_SIGNING_KEY != ''
+        with:
+          releaseDirectory: ./signed-apk
+          signingKeyBase64: ${{ secrets.ANDROID_SIGNING_KEY }}
+          alias: ${{ secrets.ANDROID_ALIAS }}
+          keyStorePassword: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        env:
+          BUILD_TOOLS_VERSION: "34.0.0"
+
+      - name: Finalize signed APK
+        shell: bash
+        run: |
+          mkdir -p out
+          SIGNED="${{ steps.sign.outputs.signedReleaseFile }}"
+          if [ -n "$SIGNED" ] && [ -f "$SIGNED" ]; then
+            cp "$SIGNED" "out/${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.apk"
+          else
+            # signing skipped/failed → fall back to the gradle-signed apk so the run still yields something
+            cp "./signed-apk/${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.apk" "out/" || true
+          fi
+          ls -lh out/
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ matrix.job.arch }}
+          path: out/${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────
+  create-release:
+    name: "📦 Release"
+    needs: [detect-version, build-rustdesk-android]
+    if: |
+      always() &&
+      needs.detect-version.outputs.should_build == 'true' &&
+      needs.build-rustdesk-android.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: false
+      - name: Flatten assets
+        run: |
+          mkdir -p final-assets
+          find release-assets -type f -name "*.apk" -exec cp {} final-assets/ \;
+          echo "=== Release assets ==="; ls -lh final-assets/
+      - name: Build release notes (changelog section only)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - "${{ env.VERSION }}" > RELEASE_NOTES.md << 'PYEOF'
+          import sys, os, json, re, urllib.request
+          ver = sys.argv[1]
+          hdr = {"Accept": "application/vnd.github+json", "User-Agent": "rd-builder"}
+          tok = os.environ.get("GH_TOKEN", "")
+          if tok:
+              hdr["Authorization"] = "Bearer " + tok
+          body = ""
+          for tag in (ver, "v" + ver):
+              try:
+                  req = urllib.request.Request("https://api.github.com/repos/rustdesk/rustdesk/releases/tags/" + tag, headers=hdr)
+                  body = (json.load(urllib.request.urlopen(req, timeout=20)).get("body") or "")
+                  if body:
+                      break
+              except Exception:
+                  pass
+          m = re.search(r"<summary>\s*Changelog\s*</summary>(.*?)</details>", body, re.S | re.I)
+          if m:
+              cl = m.group(1).strip()
+          else:
+              m2 = re.search(r"(?:^|\n)#{0,6}\s*Changelog\s*\n(.*)$", body, re.S | re.I)
+              cl = re.sub(r"</?(?:details|summary)[^>]*>", "", m2.group(1)).strip() if m2 else ""
+          parts = [
+              "Custom **RustDesk** build — connects to `ir.remote-neo.com` with password + click approval.\n",
+              "Built from the official RustDesk `%s` source with the server + config baked in. "
+              "All variants: [download page](https://penangit.github.io/rustdesk-builder-v2/).\n" % ver,
+              "---\n",
+              "## Changelog — RustDesk %s\n" % ver,
+              cl if cl else "_Upstream changelog unavailable._",
+              "\n> Mirrored from [rustdesk/rustdesk](https://github.com/rustdesk/rustdesk/releases/tag/%s)." % ver,
+          ]
+          print("\n".join(parts))
+          PYEOF
+          echo "=== release notes ==="; cat RELEASE_NOTES.md
+      - name: Add Android builds to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ env.VERSION }}"
+          name: "RustDesk v${{ env.VERSION }} — Custom Build"
+          body_path: RELEASE_NOTES.md
+          files: final-assets/*
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─────────────────────────────────────────────────────────────────
+  update-pages:
+    name: "🌐 Update download page"
+    needs: [detect-version, create-release]
+    if: needs.create-release.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Update versions list
+        run: |
+          echo "${{ env.VERSION }}" >> docs/versions.txt
+          sort -Vru docs/versions.txt -o docs/versions.txt
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/versions.txt
+          git diff --cached --quiet || git commit -m "🤖 Built v${{ env.VERSION }} (Android)"
+          git push
