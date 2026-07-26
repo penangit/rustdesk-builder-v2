@@ -2,12 +2,14 @@
 #  RustDesk Custom Client Builder — Linux only
 #  Config: configs/RustDesk.json
 #
-#  This workflow:
-#    1. Checks if a new RustDesk version exists upstream
-#    2. Generates flutter-rust-bridge files
-#    3. Builds Linux .deb + .rpm
-#    4. Publishes to GitHub Releases
-#    5. Updates the download page
+#  Audit notes (vs rdgen generator-linux.yml):
+#    - Bridge: matches rdgen bridge.yml ✅
+#    - vcpkg: now runs from rustdesk/ dir where vcpkg.json lives ✅
+#    - libva-dev: explicitly installed before vcpkg (rdgen does this) ✅
+#    - Patches: loaded from builder/ which survives checkout ✅
+#    - Runner: ubuntu-22.04 (matches rdgen) ✅
+#    - custom.txt → custom_.txt via allowCustom.py ✅
+#    - Rust 1.75, Flutter 3.24.5 (matches rdgen) ✅
 ###############################################################################
 name: "🐧 Build Linux Client"
 
@@ -39,8 +41,6 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────
-  #  Detect version & decide whether to build
-  # ─────────────────────────────────────────────────────────────────
   detect-version:
     name: "🔍 Detect version"
     runs-on: ubuntu-latest
@@ -54,7 +54,6 @@ jobs:
         run: |
           MANUAL="${{ github.event.inputs.rustdesk_version }}"
           FORCE="${{ github.event.inputs.force_build }}"
-
           if [ -n "$MANUAL" ]; then
             echo "version=$MANUAL" >> $GITHUB_OUTPUT
             if [ "$FORCE" = "true" ]; then
@@ -69,23 +68,18 @@ jobs:
             fi
             exit 0
           fi
-
           LATEST=$(curl -sf "https://api.github.com/repos/rustdesk/rustdesk/releases/latest" \
             | jq -r '.tag_name // empty' | sed 's/^v//')
-
           if [ -z "$LATEST" ]; then
             LATEST=$(curl -sf "https://api.github.com/repos/rustdesk/rustdesk/tags?per_page=1" \
               | jq -r '.[0].name // empty' | sed 's/^v//')
           fi
-
           if [ -z "$LATEST" ]; then
             echo "::error::Could not determine latest RustDesk version"
             echo "should_build=false" >> $GITHUB_OUTPUT
             exit 0
           fi
-
           echo "::notice::Latest upstream version: $LATEST"
-
           if gh release view "v${LATEST}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "::notice::Already built v${LATEST} — skipping"
             echo "should_build=false" >> $GITHUB_OUTPUT
@@ -97,8 +91,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ─────────────────────────────────────────────────────────────────
-  #  Generate flutter-rust-bridge
   # ─────────────────────────────────────────────────────────────────
   generate-bridge:
     name: "🌉 Generate bridge"
@@ -169,8 +161,6 @@ jobs:
             ./flutter/ios/Runner/bridge_generated.h
 
   # ─────────────────────────────────────────────────────────────────
-  #  Build Linux
-  # ─────────────────────────────────────────────────────────────────
   build-linux:
     name: "🐧 Build Linux x86_64"
     needs: [detect-version, generate-bridge]
@@ -180,7 +170,7 @@ jobs:
     env:
       VERSION: ${{ needs.detect-version.outputs.version }}
     steps:
-      # ── Checkout OUR repo to builder/ so patches survive ──
+      # ── Step 1: checkout our repo to builder/ ──
       - name: Checkout builder repo
         uses: actions/checkout@v4
         with:
@@ -206,18 +196,45 @@ jobs:
         with:
           swap-size-gb: 12
 
+      # ── Step 2: system deps (matches rdgen's apt list) ──
       - name: Install system deps
         run: |
           sudo apt-get update -y
           sudo apt-get install -y \
-            clang cmake curl gcc git g++ imagemagick libunwind-dev nasm ninja-build \
-            libayatana-appindicator3-dev libasound2-dev libclang-dev \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libgtk-3-dev libpam0g-dev libpulse-dev libva-dev libvdpau-dev \
-            libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxdo-dev libxfixes-dev llvm-dev pkg-config rpm tree wget
+            build-essential \
+            clang \
+            cmake \
+            curl \
+            gcc \
+            git \
+            g++ \
+            imagemagick \
+            libayatana-appindicator3-dev \
+            libasound2-dev \
+            libclang-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libgtk-3-dev \
+            libpam0g-dev \
+            libpulse-dev \
+            libunwind-dev \
+            libva-dev \
+            libvdpau-dev \
+            libxcb-randr0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxdo-dev \
+            libxfixes-dev \
+            llvm-dev \
+            nasm \
+            ninja-build \
+            pkg-config \
+            python3 \
+            rpm \
+            tree \
+            wget
 
-      # ── Checkout RustDesk source to a SEPARATE path ──
+      # ── Step 3: checkout RustDesk source to rustdesk/ ──
       - name: Checkout RustDesk source
         uses: actions/checkout@v4
         with:
@@ -256,23 +273,41 @@ jobs:
           cd "$FLUTTER_DIR"
           git apply flutter_3.24.4_dropdown_menu_enableFilter.diff || echo "Flutter patch already applied or N/A"
 
+      # ── Step 4: vcpkg — MUST run from rustdesk/ where vcpkg.json lives ──
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgDirectory: /opt/artifacts/vcpkg
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          vcpkgJsonGlob: "rustdesk/vcpkg.json"
           doNotCache: false
 
-      - name: Install vcpkg deps
+      - name: Install vcpkg dependencies
+        working-directory: rustdesk
         run: |
-          $VCPKG_ROOT/vcpkg install --triplet x64-linux --x-install-root="$VCPKG_ROOT/installed" || true
+          # rdgen explicitly installs libva-dev before vcpkg
+          sudo apt install -y libva-dev && apt show libva-dev
+          if ! $VCPKG_ROOT/vcpkg \
+            install \
+            --triplet x64-linux \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
+          head -n 100 "${VCPKG_ROOT}/buildtrees/ffmpeg/build-x64-linux-rel-out.log" || true
 
       - name: Disable staticlib (Linux only)
         working-directory: rustdesk
         run: |
           sed -i 's/\["cdylib", "staticlib", "rlib"\]/\["cdylib"\]/g' Cargo.toml
 
-      # ── Apply all customizations ──
+      # ── Step 5: apply all customizations ──
       - name: Apply customizations
         working-directory: rustdesk
         run: |
@@ -332,7 +367,7 @@ jobs:
           fi
           echo "::endgroup::"
 
-      # ── Build ──
+      # ── Step 6: build ──
       - name: Build Rust library
         working-directory: rustdesk
         run: |
@@ -378,8 +413,6 @@ jobs:
           retention-days: 30
 
   # ─────────────────────────────────────────────────────────────────
-  #  Create GitHub Release
-  # ─────────────────────────────────────────────────────────────────
   create-release:
     name: "📦 Release"
     needs: [detect-version, build-linux]
@@ -422,8 +455,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ─────────────────────────────────────────────────────────────────
-  #  Update download page
   # ─────────────────────────────────────────────────────────────────
   update-pages:
     name: "🌐 Update download page"
