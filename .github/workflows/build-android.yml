@@ -17,6 +17,7 @@
 #  Only appropriate because these clients are for your own ir.remote-neo.com deployment.
 ###############################################################################
 name: "🤖 Build Android"
+run-name: "🤖 Android · ${{ github.event.inputs.rustdesk_version || 'latest' }}"
 
 on:
   workflow_dispatch:
@@ -338,6 +339,21 @@ jobs:
           sed -i -e '/const KEY:/,/};/d' ./src/common.rs
           sed -i -e '/let Ok(data) = sign::verify(&data, &pk)/,/};/d' ./src/common.rs
 
+      # Android never file-reads custom_.txt — the config must be handed to the
+      # native side. Both the server (Kotlin FFI.startServer) and the FFI init
+      # (Dart main_init) pass "" by default; embed the base64 config there so
+      # read_custom_client() runs and presets the password + permissions.
+      - name: Embed custom config for Android
+        shell: bash
+        run: |
+          KOTLIN=./flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainService.kt
+          DART=./flutter/lib/models/native_model.dart
+          sed -i "s|FFI.startServer(configPath, \"\")|FFI.startServer(configPath, \"${{ env.CUSTOM_B64 }}\")|" "$KOTLIN"
+          sed -i "s|customClientConfig: '',|customClientConfig: '${{ env.CUSTOM_B64 }}',|" "$DART"
+          echo "--- verify ---"
+          grep -n 'FFI.startServer(configPath' "$KOTLIN" | sed 's/\(.\{80\}\).*/\1.../'
+          grep -n 'customClientConfig:' "$DART" | sed 's/\(.\{80\}\).*/\1.../'
+
       - name: Remove scam alert on Android
         shell: bash
         run: |
@@ -395,7 +411,7 @@ jobs:
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
           # baked config (password + permissions + approve-mode) as a bundled asset
-          echo -n '${{ env.CUSTOM_TXT }}' > ./flutter/assets/custom_.txt
+          echo -n '${{ env.CUSTOM_B64 }}' > ./flutter/assets/custom_.txt
           # native runtime libs
           mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}
           cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.job.jni }}/libc++_shared.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}/
