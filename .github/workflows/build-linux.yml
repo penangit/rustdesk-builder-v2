@@ -20,7 +20,7 @@
 #   • AppImage / flatpak steps are continue-on-error (they fail often upstream
 #     too); a partial release is expected until each is dialed in.
 ###############################################################################
-name: "🐧 Build Linux (full — all rdgen variants)"
+name: "🐧 Build Linux"
 
 on:
   workflow_dispatch:
@@ -508,6 +508,14 @@ jobs:
             python3 ./build.py --flutter --skip-cargo
             for name in *.deb; do mv "$name" /workspace/output/"${{ env.filename }}-${{ matrix.job.arch }}.deb"; done
 
+            # rpm/suse/arch package the flutter BUNDLE (not tmpdeb), so the deb's
+            # custom_.txt never reaches them. Copy it into the bundle too, so the
+            # baked password/permissions land in every format.
+            BUNDLE=flutter/build/linux/x64/release/bundle
+            [ "${{ matrix.job.arch }}" = "aarch64" ] && BUNDLE=flutter/build/linux/arm64/release/bundle
+            cp ./custom_.txt "$BUNDLE/custom_.txt" || echo "WARN: could not copy custom_.txt into bundle"
+            ls -l "$BUNDLE/custom_.txt" || echo "WARN: custom_.txt missing from bundle ($BUNDLE)"
+
             # Fedora rpm
             case ${{ matrix.job.arch }} in
               aarch64) sed -i "s/linux\/x64/linux\/arm64/g" ./res/rpm-flutter.spec ;;
@@ -715,12 +723,33 @@ jobs:
             -exec cp {} final-assets/ \;
           echo "=== Release assets ==="
           ls -lh final-assets/
-      # No body: — adds Linux variants to the existing v<version> release
+      - name: Build release notes (mirror upstream changelog)
+        run: |
+          VER="${{ env.VERSION }}"
+          # RustDesk tags are usually unprefixed ("1.4.9"); try both.
+          BODY=$(curl -sf "https://api.github.com/repos/rustdesk/rustdesk/releases/tags/${VER}" | jq -r '.body // empty')
+          [ -z "$BODY" ] && BODY=$(curl -sf "https://api.github.com/repos/rustdesk/rustdesk/releases/tags/v${VER}" | jq -r '.body // empty')
+          {
+            echo "Custom **RustDesk** build — connects to \`ir.remote-neo.com\` with password + click approval."
+            echo ""
+            echo "Built from the official RustDesk \`${VER}\` source with the server and config baked in. All platforms/variants: see the [download page](https://penangit.github.io/rustdesk-builder-v2/)."
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Changelog — RustDesk ${VER}"
+            echo ""
+            if [ -n "$BODY" ]; then printf '%s\n' "$BODY"; else echo "_Upstream changelog unavailable._"; fi
+            echo ""
+            echo "> Changelog mirrored from [rustdesk/rustdesk](https://github.com/rustdesk/rustdesk/releases/tag/${VER})."
+          } > RELEASE_NOTES.md
+          echo "=== release notes ==="; cat RELEASE_NOTES.md
+      # Same notes on every platform workflow → safe to overwrite (idempotent).
       - name: Add Linux builds to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ env.VERSION }}"
           name: "RustDesk v${{ env.VERSION }} — Custom Build"
+          body_path: RELEASE_NOTES.md
           files: final-assets/*
           fail_on_unmatched_files: false
         env:
