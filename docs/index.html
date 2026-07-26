@@ -120,6 +120,33 @@
   .dl-btn .meta .size  { font-size: 0.7rem; color: var(--muted); }
   .dl-btn.missing { opacity: 0.32; pointer-events: none; border-style: dashed; }
 
+  /* ── Build-in-progress banner ── */
+  .build-banner {
+    display: none; align-items: center; gap: 0.6rem;
+    max-width: 820px; margin: 1.25rem auto -0.25rem; padding: 0.7rem 1rem;
+    background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.35);
+    border-radius: var(--radius); color: var(--amber); font-size: 0.83rem;
+  }
+  .build-banner.show { display: flex; }
+  .build-banner .bspin {
+    width: 14px; height: 14px; flex-shrink: 0;
+    border: 2px solid rgba(245,158,11,0.3); border-top-color: var(--amber);
+    border-radius: 50%; animation: spin 0.7s linear infinite;
+  }
+  .build-banner b { color: #fbbf24; font-weight: 600; }
+  .build-banner a { color: #fbbf24; text-decoration: underline; }
+
+  /* ── Changelog ── */
+  .changelog { margin-top: 1.15rem; border-top: 1px solid var(--border); padding-top: 0.9rem; }
+  .cl-title { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 700; margin-bottom: 0.5rem; }
+  .cl-loading { color: var(--muted); font-size: 0.82rem; padding: 0.2rem 0; }
+  .changelog .cl-h { font-size: 0.88rem; font-weight: 600; margin: 0.75rem 0 0.3rem; color: var(--text); }
+  .changelog .cl-ul { margin: 0.15rem 0 0.55rem 1.15rem; }
+  .changelog .cl-ul li { font-size: 0.82rem; color: var(--muted); margin-bottom: 0.15rem; }
+  .changelog p { font-size: 0.82rem; color: var(--muted); margin: 0.28rem 0; }
+  .changelog code { background: var(--surface-2); padding: 0.05rem 0.3rem; border-radius: 4px; font-size: 0.78rem; }
+  .cl-src { margin-top: 0.7rem; font-size: 0.72rem; color: var(--muted); }
+
   /* ── Footer ── */
   .footer { text-align: center; padding: 2rem 1rem; color: var(--muted); font-size: 0.75rem; border-top: 1px solid var(--border); margin-top: 2rem; }
 
@@ -142,6 +169,8 @@
     ir.remote-neo.com
   </div>
 </div>
+
+<div class="build-banner" id="buildBanner"></div>
 
 <div class="container">
   <div id="releases">
@@ -262,15 +291,114 @@ function renderRelease(rel, isLatest) {
         <span class="count${built === 0 ? ' none' : ''}"><b>${built}</b> / ${TOTAL_VARIANTS} builds</span>
         <span class="date">${relativeDate(rel.published_at || rel.created_at)}</span>
       </div>
-      <div class="release-body">${groupsHtml}</div>
+      <div class="release-body">${groupsHtml}<div class="changelog" data-cl="${version}"></div></div>
     </div>`;
 }
 
 function toggleRelease(version) {
-  if (openState.has(version)) openState.delete(version);
-  else openState.add(version);
+  const opening = !openState.has(version);
+  if (opening) openState.add(version); else openState.delete(version);
   const card = document.querySelector(`.release[data-ver="${version}"]`);
-  if (card) card.classList.toggle('open');
+  if (!card) return;
+  card.classList.toggle('open');
+  if (opening) {
+    const cl = card.querySelector('.changelog');
+    if (cl) loadChangelog(version, cl);
+  }
+}
+
+// ── Minimal, HTML-safe Markdown renderer (headers / lists / links / code) ──
+function escapeHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function inlineMd(s) {
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/(^|\s)(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  return s;
+}
+// Changelog section keywords rendered as headers even without a markdown '###'.
+const SECTION_WORDS = /^(Added|Changed|Changes?|Fixed|Fixes?|Removed|Remove|Deprecated|Security|Performance|Improvements?|New|Notes?|Breaking(?: Changes?)?|Features?)$/i;
+// RustDesk wraps notes in <details><summary>Changelog</summary>…</details>, preceded
+// by a download table that links to rustdesk's OWN binaries — keep ONLY the changelog.
+function extractChangelog(body) {
+  let m = body.match(/<summary>\s*Changelog\s*<\/summary>([\s\S]*?)<\/details>/i);
+  if (m) return m[1].trim();
+  m = body.match(/(?:^|\n)#{0,6}\s*Changelog\s*\n([\s\S]*)$/i);
+  if (m) return m[1].replace(/<\/?(?:details|summary)[^>]*>/gi, '').trim();
+  // Fallback: drop tables / shield badges / promo lines, keep the rest.
+  return body.split(/\r?\n/).filter(l =>
+    !/^\s*\|/.test(l) && !/^\s*\[!\[/.test(l) &&
+    !/^For more downloads/i.test(l) && !/^For the latest features/i.test(l)
+  ).join('\n').replace(/<\/?(?:details|summary)[^>]*>/gi, '').trim();
+}
+function mdToHtml(md) {
+  const lines = escapeHtml(md).split(/\r?\n/);
+  let html = '', inList = false;
+  const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    if (!line.trim()) { closeList(); continue; }
+    let m;
+    if ((m = line.match(/^#{1,6}\s+(.*)$/)))      { closeList(); html += `<h4 class="cl-h">${inlineMd(m[1])}</h4>`; }
+    else if ((m = line.match(/^\s*[-*]\s+(.*)$/))) { if (!inList) { html += '<ul class="cl-ul">'; inList = true; } html += `<li>${inlineMd(m[1])}</li>`; }
+    else if (SECTION_WORDS.test(line.trim()))     { closeList(); html += `<h4 class="cl-h">${line.trim()}</h4>`; }
+    else                                          { closeList(); html += `<p>${inlineMd(line)}</p>`; }
+  }
+  closeList();
+  return html;
+}
+
+// ── Lazy-load upstream changelog per version (cached) ──
+const changelogCache = {}; // version -> html | 'loading' | 'error'
+async function loadChangelog(version, container) {
+  const cached = changelogCache[version];
+  if (cached === 'loading') return;
+  if (cached && cached !== 'error') { container.innerHTML = cached; return; }
+  changelogCache[version] = 'loading';
+  container.innerHTML = '<div class="cl-loading">Loading changelog…</div>';
+  let body = '';
+  for (const tag of [version, 'v' + version]) {
+    try {
+      const r = await fetch(`https://api.github.com/repos/rustdesk/rustdesk/releases/tags/${tag}`,
+        { headers: { Accept: 'application/vnd.github+json' } });
+      if (r.ok) { const j = await r.json(); body = (j.body || '').trim(); if (body) break; }
+    } catch (_) {}
+  }
+  if (body) {
+    const html = `<div class="cl-title">Changelog — RustDesk v${version}</div>` + mdToHtml(extractChangelog(body)) +
+      `<div class="cl-src">Mirrored from <a href="https://github.com/rustdesk/rustdesk/releases/tag/${version}" target="_blank" rel="noopener">rustdesk/rustdesk ↗</a></div>`;
+    changelogCache[version] = html;
+    container.innerHTML = html;
+  } else {
+    changelogCache[version] = 'error';
+    container.innerHTML = '<div class="cl-loading">Changelog unavailable.</div>';
+  }
+}
+
+// ── Build-in-progress banner (polls the Actions runs API) ──
+const RUNS_API = `https://api.github.com/repos/${REPO}/actions/runs?per_page=20`;
+let wasBuilding = false;
+async function checkBuilds() {
+  const banner = document.getElementById('buildBanner');
+  try {
+    const res = await fetch(RUNS_API, { headers: { Accept: 'application/vnd.github+json' } });
+    if (!res.ok) throw new Error();
+    const runs = (await res.json()).workflow_runs || [];
+    const active = runs.filter(r => r.status === 'in_progress' || r.status === 'queued');
+    if (active.length) {
+      const names = [...new Set(active.map(r => r.name))].join(', ');
+      banner.innerHTML = `<span class="bspin"></span><span><b>Build in progress</b> — ${names} · <a href="${active[0].html_url}" target="_blank" rel="noopener">view run ↗</a></span>`;
+      banner.classList.add('show');
+      return true;
+    }
+    banner.classList.remove('show');
+    return false;
+  } catch (_) { banner.classList.remove('show'); return false; }
+}
+async function pollBuilds() {
+  const building = await checkBuilds();
+  if (wasBuilding && !building) loadReleases(); // a build just finished → pull fresh assets
+  wasBuilding = building;
 }
 
 // ── Fetch & Render ──────────────────────────────────────────────────────
@@ -292,13 +420,22 @@ async function loadReleases() {
     }
 
     el.innerHTML = data.map((r, i) => renderRelease(r, i === 0)).join('');
+
+    // Re-populate changelogs for any expanded cards (cached → instant).
+    openState.forEach(v => {
+      const card = document.querySelector(`.release[data-ver="${v}"]`);
+      if (card) { const cl = card.querySelector('.changelog'); if (cl) loadChangelog(v, cl); }
+    });
   } catch (err) {
     el.innerHTML = `<div class="state-msg">⚠️ Could not load releases.<br><small>${err.message}</small></div>`;
   }
 }
 
 loadReleases();
-setInterval(loadReleases, 300000); // auto-refresh every 5 min
+pollBuilds();
+setInterval(loadReleases, 300000); // releases: every 5 min
+setInterval(pollBuilds,   120000); // build status: every 2 min
+// (kept conservative — GitHub's unauthenticated API allows ~60 req/hr per IP)
 </script>
 </body>
 </html>
