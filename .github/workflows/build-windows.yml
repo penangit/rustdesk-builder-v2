@@ -14,6 +14,7 @@
 #  from a future ...-i686.* 32-bit build.
 ###############################################################################
 name: "🪟 Build Windows (64-bit)"
+run-name: "🪟 Windows 64-bit · ${{ github.event.inputs.rustdesk_version || 'latest' }}"
 
 on:
   workflow_dispatch:
@@ -354,7 +355,7 @@ jobs:
       - name: Inject custom_.txt
         working-directory: rustdesk
         shell: bash
-        run: echo -n '${{ env.CUSTOM_TXT }}' > ./rustdesk/custom_.txt
+        run: echo -n '${{ env.CUSTOM_B64 }}' > ./rustdesk/custom_.txt
 
       - name: Build self-extracting EXE (portable)
         working-directory: rustdesk
