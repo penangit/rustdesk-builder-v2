@@ -1,21 +1,28 @@
 ###############################################################################
-#  RustDesk Custom Client Builder — Linux only
-#  Config: configs/RustDesk.json
+#  RustDesk Custom Client Builder — Linux FULL PARITY with rdgen
+#  Config: configs/RustDesk.json  (loaded via scripts/load-config.py)
 #
-#  Audit notes (vs rdgen generator-linux.yml):
-#    - Bridge: matches rdgen bridge.yml ✅
-#    - vcpkg: now runs from rustdesk/ dir where vcpkg.json lives ✅
-#    - libva-dev: explicitly installed before vcpkg (rdgen does this) ✅
-#    - Patches: loaded from builder/ which survives checkout ✅
-#    - Runner: ubuntu-22.04 (matches rdgen) ✅
-#    - custom.txt → custom_.txt via allowCustom.py ✅
-#    - Rust 1.75, Flutter 3.24.5 (matches rdgen) ✅
+#  Produces, per arch {x86_64, aarch64}:
+#     .deb  ·  .rpm (Fedora)  ·  .rpm (openSUSE)  ·  .AppImage  ·  .flatpak
+#  plus Arch .pkg.tar.zst (x86_64 only — arm64 Arch can't be built on x86_64).
+#
+#  Adapted from bryangerlach/rdgen generator-linux.yml. Differences:
+#   • Manual dispatch only (no cron); config comes from configs/RustDesk.json
+#     (not an encrypted-secrets zip) via a small env-mapping shim.
+#   • rdgen server/upload plumbing replaced with GitHub-release output.
+#   • Whitelabel steps gated to skip when appname is rustdesk/RustDesk
+#     (matches your working build-linux.yml — keeps stock package internals).
+#
+#  ⚠️  HIGH-RISK / UNTESTED areas to watch on first run:
+#   • aarch64 jobs need `ubuntu-22.04-arm` runners (free on PUBLIC repos).
+#   • aarch64 build runs in an old-glibc container via rustdesk-org
+#     run-on-arch-action + flutter-elinux — the flakiest part of the matrix.
+#   • AppImage / flatpak steps are continue-on-error (they fail often upstream
+#     too); a partial release is expected until each is dialed in.
 ###############################################################################
-name: "🐧 Build Linux Client"
+name: "🐧 Build Linux (full — all rdgen variants)"
 
 on:
-  schedule:
-    - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
       rustdesk_version:
@@ -23,21 +30,27 @@ on:
         required: false
         default: ""
       force_build:
-        description: "Force build even if release exists"
+        description: "Build even if release exists (keep 'true' to add Linux variants to an existing version)"
         required: false
-        default: "false"
+        default: "true"
         type: choice
-        options: ["false", "true"]
+        options: ["true", "false"]
 
 env:
   RUST_VERSION: "1.75"
+  CARGO_NDK_VERSION: "3.1.2"
+  LLVM_VERSION: "15.0.6"
   FLUTTER_VERSION: "3.24.5"
-  CARGO_EXPAND_VERSION: "1.0.95"
   FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
-  BRIDGE_FLUTTER_VERSION: "3.22.3"
+  # arm64 needs flutter-elinux because the official SDK can't build linux-arm64
+  FLUTTER_ELINUX_VERSION: "3.16.9"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  # bridge (matches your working build-linux.yml)
+  CARGO_EXPAND_VERSION: "1.0.95"
+  BRIDGE_FLUTTER_VERSION: "3.22.3"
   CONFIG_PATH: configs/RustDesk.json
+  UPLOAD_ARTIFACT: "true"
 
 jobs:
   # ─────────────────────────────────────────────────────────────────
@@ -79,12 +92,12 @@ jobs:
             echo "should_build=false" >> $GITHUB_OUTPUT
             exit 0
           fi
-          echo "::notice::Latest upstream version: $LATEST"
-          if gh release view "v${LATEST}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "::notice::Already built v${LATEST} — skipping"
+          if [ "$FORCE" = "true" ]; then
+            echo "version=$LATEST" >> $GITHUB_OUTPUT
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          elif gh release view "v${LATEST}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "should_build=false" >> $GITHUB_OUTPUT
           else
-            echo "::notice::New version v${LATEST} — will build"
             echo "version=$LATEST" >> $GITHUB_OUTPUT
             echo "should_build=true" >> $GITHUB_OUTPUT
           fi
@@ -106,31 +119,26 @@ jobs:
           repository: rustdesk/rustdesk
           ref: refs/tags/${{ env.VERSION }}
           submodules: recursive
-
       - name: Install prerequisites
         run: |
           sudo apt-get update -y
           sudo apt-get install -y \
             clang cmake curl gcc git g++ libclang-dev \
             libgtk-3-dev llvm-dev nasm ninja-build pkg-config wget
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: "rustfmt"
-
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: bridge
-
       - name: Install Flutter (bridge version)
         uses: subosito/flutter-action@v2
         with:
           channel: "stable"
           flutter-version: ${{ env.BRIDGE_FLUTTER_VERSION }}
           cache: true
-
       - name: Install bridge codegen
         run: |
           cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
@@ -139,7 +147,6 @@ jobs:
           sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' pubspec.yaml
           flutter pub get
           popd
-
       - name: Run flutter_rust_bridge_codegen
         run: |
           ~/.cargo/bin/flutter_rust_bridge_codegen \
@@ -147,7 +154,6 @@ jobs:
             --dart-output ./flutter/lib/generated_bridge.dart \
             --c-output ./flutter/macos/Runner/bridge_generated.h
           cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
-
       - name: Upload bridge artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -161,272 +167,541 @@ jobs:
             ./flutter/ios/Runner/bridge_generated.h
 
   # ─────────────────────────────────────────────────────────────────
-  build-linux:
-    name: "🐧 Build Linux x86_64"
+  #  deb + rpm(Fedora) + rpm(SUSE) + Arch(x86_64), per arch
+  # ─────────────────────────────────────────────────────────────────
+  build-rustdesk-linux:
     needs: [detect-version, generate-bridge]
     if: needs.detect-version.outputs.should_build == 'true'
-    runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    name: "🐧 packages ${{ matrix.job.arch }}"
+    runs-on: ${{ matrix.job.on }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { arch: x86_64,  target: x86_64-unknown-linux-gnu,  distro: ubuntu18.04, on: ubuntu-22.04,     deb_arch: amd64, vcpkg-triplet: x64-linux }
+          - { arch: aarch64, target: aarch64-unknown-linux-gnu, distro: ubuntu18.04, on: ubuntu-22.04-arm, deb_arch: arm64, vcpkg-triplet: arm64-linux }
     env:
       VERSION: ${{ needs.detect-version.outputs.version }}
     steps:
-      # ── Step 1: checkout our repo to builder/ ──
-      - name: Checkout builder repo
-        uses: actions/checkout@v4
-        with:
-          path: builder
-
-      - name: Export vcpkg cache variables
-        uses: actions/github-script@v6
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
-      - name: Load config
-        run: python3 builder/scripts/load-config.py "builder/${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
-
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force || true
-
-      - name: Set swap space
-        uses: pierotofy/set-swap-space@master
-        with:
-          swap-size-gb: 12
-
-      # ── Step 2: system deps (matches rdgen's apt list) ──
-      - name: Install system deps
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y \
-            build-essential \
-            clang \
-            cmake \
-            curl \
-            gcc \
-            git \
-            g++ \
-            imagemagick \
-            libayatana-appindicator3-dev \
-            libasound2-dev \
-            libclang-dev \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            libgtk-3-dev \
-            libpam0g-dev \
-            libpulse-dev \
-            libunwind-dev \
-            libva-dev \
-            libvdpau-dev \
-            libxcb-randr0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxdo-dev \
-            libxfixes-dev \
-            llvm-dev \
-            nasm \
-            ninja-build \
-            pkg-config \
-            python3 \
-            rpm \
-            tree \
-            wget
-
-      # ── Step 3: checkout RustDesk source to rustdesk/ ──
+      # ── checkout: rustdesk at root (its .github/patches is used in-container),
+      #    our builder repo under builder/ (for load-config + configs) ──
       - name: Checkout RustDesk source
         uses: actions/checkout@v4
         with:
           repository: rustdesk/rustdesk
           ref: refs/tags/${{ env.VERSION }}
           submodules: recursive
-          path: rustdesk
 
-      - name: Restore bridge files
-        uses: actions/download-artifact@v4
+      - name: Checkout builder repo
+        uses: actions/checkout@v4
         with:
-          name: bridge-artifact
-          path: ./rustdesk/
+          path: builder
+
+      - name: Load config
+        run: python3 builder/scripts/load-config.py "builder/${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
+
+      # Re-export CUSTOM_* under the lower-case names rdgen's steps expect,
+      # so the adapted steps below run almost verbatim. iconlink/logolink set
+      # to 'false' to skip the (server-based) icon/logo steps.
+      - name: Map config → build env
+        run: |
+          echo "appname=${{ env.CUSTOM_APPNAME }}" >> $GITHUB_ENV
+          echo "filename=${{ env.CUSTOM_FILENAME }}" >> $GITHUB_ENV
+          echo "compname=${{ env.CUSTOM_COMPNAME }}" >> $GITHUB_ENV
+          echo "server=${{ env.CUSTOM_SERVER }}" >> $GITHUB_ENV
+          echo "key=${{ env.CUSTOM_KEY }}" >> $GITHUB_ENV
+          echo "apiServer=${{ env.CUSTOM_API_SERVER }}" >> $GITHUB_ENV
+          echo "urlLink=${{ env.CUSTOM_URL_LINK }}" >> $GITHUB_ENV
+          echo "downloadLink=${{ env.CUSTOM_DOWNLOAD_LINK }}" >> $GITHUB_ENV
+          echo "delayFix=${{ env.CUSTOM_DELAY_FIX }}" >> $GITHUB_ENV
+          echo "xOffline=${{ env.CUSTOM_X_OFFLINE }}" >> $GITHUB_ENV
+          echo "hidecm=${{ env.CUSTOM_HIDE_CM }}" >> $GITHUB_ENV
+          echo "removeNewVersionNotif=${{ env.CUSTOM_REMOVE_NEW_VERSION_NOTIF }}" >> $GITHUB_ENV
+          echo "iconlink_url=false" >> $GITHUB_ENV
+          echo "logolink_url=false" >> $GITHUB_ENV
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Maximize build space
+        run: |
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo apt-get update -y
+          sudo apt-get install -y nasm
+          if [[ "${{ matrix.job.arch }}" == "x86_64" ]]; then
+            sudo apt-get install -y qemu-user-static
+          fi
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+
+      - name: Set Swap Space
+        if: ${{ matrix.job.arch == 'x86_64' }}
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 12
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.job.target }}
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: "linux"
-          workspaces: "rustdesk -> target"
-
-      - name: Install Flutter
-        uses: subosito/flutter-action@v2.12.0
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-
-      - name: Patch Flutter dropdown
+      - name: Save Rust toolchain version
         run: |
-          FLUTTER_DIR=$(dirname $(dirname $(which flutter)))
-          cp builder/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff "$FLUTTER_DIR/"
-          cd "$FLUTTER_DIR"
-          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff || echo "Flutter patch already applied or N/A"
+          RUST_TOOLCHAIN_VERSION=$(cargo --version | awk '{print $2}')
+          echo "RUST_TOOLCHAIN_VERSION=$RUST_TOOLCHAIN_VERSION" >> $GITHUB_ENV
 
-      # ── Step 4: vcpkg — MUST run from rustdesk/ where vcpkg.json lives ──
-      - name: Setup vcpkg
+      - name: Disable rust bridge build
+        run: |
+          sed -i "s/\[\"cdylib\", \"staticlib\", \"rlib\"\]/\[\"cdylib\"\]/g" Cargo.toml
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Setup vcpkg with Github Actions binary cache
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgDirectory: /opt/artifacts/vcpkg
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          vcpkgJsonGlob: "rustdesk/vcpkg.json"
           doNotCache: false
 
       - name: Install vcpkg dependencies
-        working-directory: rustdesk
+        shell: bash
         run: |
-          # rdgen explicitly installs libva-dev before vcpkg
           sudo apt install -y libva-dev && apt show libva-dev
           if ! $VCPKG_ROOT/vcpkg \
             install \
-            --triplet x64-linux \
+            --triplet ${{ matrix.job.vcpkg-triplet }} \
             --x-install-root="$VCPKG_ROOT/installed"; then
             find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
-              echo "$_1:"
-              echo "======"
-              cat "$_1"
-              echo "======"
-              echo ""
+              echo "$_1:"; echo "======"; cat "$_1"; echo "======"; echo ""
             done
             exit 1
           fi
-          head -n 100 "${VCPKG_ROOT}/buildtrees/ffmpeg/build-x64-linux-rel-out.log" || true
+          head -n 100 "${VCPKG_ROOT}/buildtrees/ffmpeg/build-${{ matrix.job.vcpkg-triplet }}-rel-out.log" || true
 
-      - name: Disable staticlib (Linux only)
-        working-directory: rustdesk
+      # ── customizations (host side, before the container build) ──
+      - name: Server + key + api + allow custom.txt
+        shell: bash
         run: |
-          sed -i 's/\["cdylib", "staticlib", "rlib"\]/\["cdylib"\]/g' Cargo.toml
-
-      # ── Step 5: apply all customizations ──
-      - name: Apply customizations
-        working-directory: rustdesk
-        run: |
-          echo "::group::Server + Key + API"
-          sed -i "s|rs-ny.rustdesk.com|${{ env.CUSTOM_SERVER }}|" ./libs/hbb_common/src/config.rs 2>/dev/null || true
-          sed -i "s|OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=|${{ env.CUSTOM_KEY }}|" ./libs/hbb_common/src/config.rs 2>/dev/null || true
-          sed -i "s|https://admin.rustdesk.com|${{ env.CUSTOM_API_SERVER }}|" ./src/common.rs
-          echo "::endgroup::"
-
-          echo "::group::Allow custom.txt (bypass signature check)"
-          python3 ../builder/.github/patches/allowCustom.py
-          git apply ../builder/.github/patches/removeSetupServerTip.diff || echo "removeSetupServerTip patch N/A"
-          echo "::endgroup::"
-
-          echo "::group::App name"
-          if [ "${{ env.CUSTOM_APPNAME }}" != "rustdesk" ] && [ "${{ env.CUSTOM_APPNAME }}" != "RustDesk" ]; then
-            find ./src/lang -name "*.rs" -exec sed -i "s|RustDesk|${{ env.CUSTOM_APPNAME }}|" {} \;
-            sed -i "s|description = \"RustDesk Remote Desktop\"|description = \"${{ env.CUSTOM_APPNAME }}\"|" ./Cargo.toml || true
-          fi
-          echo "::endgroup::"
-
-          echo "::group::Company name"
-          if [ -n "${{ env.CUSTOM_COMPNAME }}" ] && [ "${{ env.CUSTOM_COMPNAME }}" != "Purslane Ltd" ]; then
-            sed -i "s|Purslane Tech Pte. Ltd.|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs \
-              ./flutter/lib/desktop/pages/desktop_setting_page.dart 2>/dev/null || true
-            sed -i "s|Purslane Ltd|${{ env.CUSTOM_COMPNAME }}|g" ./Cargo.toml ./libs/portable/Cargo.toml ./src/main.rs \
-              ./flutter/lib/desktop/pages/desktop_setting_page.dart 2>/dev/null || true
-            find ./src/lang -name "*.rs" -exec sed -i '/powered_by_me/s|RustDesk|${{ env.CUSTOM_COMPNAME }}|g' {} \; 2>/dev/null || true
-          fi
-          echo "::endgroup::"
-
-          echo "::group::Feature flags"
-          [ "${{ env.CUSTOM_DELAY_FIX }}" == "true" ] && sed -i 's|!key.is_empty()|false|' ./src/client.rs && echo "  delay fix applied" || true
-          [ "${{ env.CUSTOM_X_OFFLINE }}" == "true" ] && git apply ../builder/.github/patches/xoffline.diff && echo "  xOffline applied" || true
-          [ "${{ env.CUSTOM_HIDE_CM }}" == "true" ] && git apply ../builder/.github/patches/hidecm.diff && echo "  hidecm applied" || true
-          if [ "${{ env.CUSTOM_REMOVE_NEW_VERSION_NOTIF }}" == "true" ]; then
-            sed -i 's|updateUrl.isNotEmpty|false|' ./flutter/lib/desktop/pages/desktop_home_page.dart
-            echo "  removeNewVersionNotif applied"
-          fi
-          echo "::endgroup::"
-
-          echo "::group::Fix flutter_gpu_texture_renderer"
-          sed -i -e 's|2ded7f146437a761ffe6981e2f742038f85ca68d|08a471bb8ceccdd50483c81cdfa8b81b07b14b87|' ./flutter/pubspec.lock 2>/dev/null || true
-          sed -i -e 's|2ded7f146437a761ffe6981e2f742038f85ca68d|08a471bb8ceccdd50483c81cdfa8b81b07b14b87|' ./flutter/pubspec.yaml 2>/dev/null || true
-          echo "::endgroup::"
-
-          echo "::group::URL links"
-          if [ -n "${{ env.CUSTOM_URL_LINK }}" ] && [ "${{ env.CUSTOM_URL_LINK }}" != "https://rustdesk.com" ]; then
-            sed -i "s|https://rustdesk.com|${{ env.CUSTOM_URL_LINK }}|g" ./flutter/lib/common.dart \
-              ./flutter/lib/desktop/pages/desktop_setting_page.dart \
-              ./flutter/lib/mobile/pages/settings_page.dart 2>/dev/null || true
-          fi
-          if [ -n "${{ env.CUSTOM_DOWNLOAD_LINK }}" ] && [ "${{ env.CUSTOM_DOWNLOAD_LINK }}" != "https://rustdesk.com/download" ]; then
-            sed -i "s|https://rustdesk.com/download|${{ env.CUSTOM_DOWNLOAD_LINK }}|g" \
-              ./flutter/lib/desktop/pages/desktop_home_page.dart \
-              ./flutter/lib/mobile/pages/connection_page.dart 2>/dev/null || true
-          fi
-          echo "::endgroup::"
-
-      # ── Step 6: build ──
-      - name: Build Rust library
-        working-directory: rustdesk
-        run: |
-          export CARGO_INCREMENTAL=0
-          cargo build --lib --features hwcodec,flutter,unix-file-copy-paste --release
-
-      - name: Build Flutter + package
-        working-directory: rustdesk
-        run: |
-          export DEB_ARCH=amd64
-
+          sed -i -e 's|rs-ny.rustdesk.com|${{ env.server }}|' ./libs/hbb_common/src/config.rs
+          sed -i -e 's|OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=|${{ env.key }}|' ./libs/hbb_common/src/config.rs
+          sed -i -e 's|https://admin.rustdesk.com|${{ env.apiServer }}|' ./src/common.rs
+          wget -q https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/allowCustom.py
+          python3 allowCustom.py
+          wget -q https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/removeSetupServerTip.diff
+          git apply removeSetupServerTip.diff || echo "removeSetupServerTip N/A"
           echo -n '${{ env.CUSTOM_TXT }}' > ./custom_.txt
-          mkdir -p flutter/assets
-          cp ./custom_.txt ./flutter/assets/custom_.txt
-          mkdir -p flutter/tmpdeb/usr/share/rustdesk
-          cp ./custom_.txt ./flutter/tmpdeb/usr/share/rustdesk/custom_.txt
 
-          python3 ./build.py --flutter --skip-cargo
-
-      - name: Collect outputs
-        working-directory: rustdesk
+      - name: Change company name
+        if: env.compname != 'Purslane Ltd'
+        continue-on-error: true
+        shell: bash
         run: |
-          mkdir -p output
+          sed -i -e 's|Purslane Tech Pte. Ltd.|${{ env.compname }}|' ./flutter/lib/desktop/pages/desktop_setting_page.dart
+          sed -i -e 's|Purslane Tech Pte. Ltd.|${{ env.compname }}|' ./Cargo.toml
+          sed -i -e 's|Purslane Tech Pte. Ltd.|${{ env.compname }}|' ./libs/portable/Cargo.toml
+          sed -i -e 's|Purslane Tech Pte. Ltd.|${{ env.compname }}|' ./src/main.rs
+          sed -i -e 's|Purslane Ltd|${{ env.compname }}|' ./flutter/lib/desktop/pages/desktop_setting_page.dart
+          sed -i -e 's|Purslane Ltd|${{ env.compname }}|' ./Cargo.toml
+          sed -i -e 's|Purslane Ltd|${{ env.compname }}|' ./libs/portable/Cargo.toml
+          sed -i -e 's|Purslane Ltd|${{ env.compname }}|' ./src/main.rs
 
-          for f in *.deb; do
-            [ -f "$f" ] && mv "$f" "output/${{ env.CUSTOM_FILENAME }}-x86_64.deb" && echo "✅ DEB: $f"
-          done
+      - name: Change appname to custom (skipped for stock rustdesk/RustDesk)
+        if: ${{ env.appname != 'rustdesk' && env.appname != 'RustDesk' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i -e 's|description = "RustDesk Remote Desktop"|description = "${{ env.appname }}"|' ./Cargo.toml
+          sed -i -e 's|ProductName = "RustDesk"|ProductName = "${{ env.appname }}"|' ./Cargo.toml
+          sed -i -e 's|FileDescription = "RustDesk Remote Desktop"|FileDescription = "${{ env.appname }}"|' ./Cargo.toml
+          sed -i -e 's|description = "RustDesk Remote Desktop"|description = "${{ env.appname }}"|' ./libs/portable/Cargo.toml
+          find ./src/lang -name "*.rs" -exec sed -i -e 's|RustDesk|${{ env.appname }}|' {} \;
+          sed -i -e '/-p tmpdeb\/usr\/lib\/rustdesk/d' ./build.py
 
-          HBB=$(pwd) rpmbuild ./res/rpm-flutter.spec -bb 2>&1 || echo "⚠️ RPM build failed (non-fatal)"
-          for f in ~/rpmbuild/RPMS/x86_64/*.rpm; do
-            [ -f "$f" ] && mv "$f" "output/${{ env.CUSTOM_FILENAME }}-x86_64.rpm" && echo "✅ RPM: $f"
-          done
+      - name: Change url to custom
+        if: env.urlLink != 'https://rustdesk.com'
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i -e 's|Homepage: https://rustdesk.com|Homepage: ${{ env.urlLink }}|' ./build.py
+          sed -i -e "s|launchUrl(Uri.parse('https://rustdesk.com'));|launchUrl(Uri.parse('${{ env.urlLink }}'));|" ./flutter/lib/common.dart
+          sed -i -e "s|launchUrlString('https://rustdesk.com');|launchUrlString('${{ env.urlLink }}');|" ./flutter/lib/desktop/pages/desktop_setting_page.dart
+          sed -i -e "s|const url = 'https://rustdesk.com/';|const url = '${{ env.urlLink }}';|" ./flutter/lib/mobile/pages/settings_page.dart
 
-          echo ""
-          echo "=== Output files ==="
-          ls -lh output/ || echo "❌ No output files!"
+      - name: Change download link to custom
+        if: env.downloadLink != 'https://rustdesk.com/download'
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i -e 's|https://rustdesk.com/download|${{ env.downloadLink }}|' ./flutter/lib/desktop/pages/desktop_home_page.dart
+          sed -i -e 's|https://rustdesk.com/download|${{ env.downloadLink }}|' ./flutter/lib/mobile/pages/connection_page.dart
 
-      - name: Upload artifacts
+      - name: Fix connection delay
+        if: ${{ env.delayFix == 'true' }}
+        continue-on-error: true
+        shell: bash
+        run: sed -i -e 's|!key.is_empty()|false|' ./src/client.rs
+
+      - name: Use X for offline display
+        if: env.xOffline == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          wget -q https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/xoffline.diff
+          git apply xoffline.diff || echo "xoffline N/A"
+
+      - name: hide-cm
+        if: env.hidecm == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          wget -q https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/hidecm.diff
+          git apply hidecm.diff || echo "hidecm N/A"
+
+      - name: removeNewVersionNotif
+        if: env.removeNewVersionNotif == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i -e 's|updateUrl.isNotEmpty|false|' ./flutter/lib/desktop/pages/desktop_home_page.dart
+          sed -i '/let (request, url) =/,/Ok(())/{/Ok(())/!d}' ./src/common.rs
+
+      # ── build inside old-glibc container (deb + rpm + suse rpm) ──
+      - uses: rustdesk-org/run-on-arch-action@amd64-support
+        name: Build rustdesk (container)
+        id: build
+        with:
+          arch: ${{ matrix.job.arch }}
+          distro: ${{ matrix.job.distro }}
+          githubToken: ${{ github.token }}
+          setup: |
+            ls -l "${PWD}"
+            ls -l /opt/artifacts/vcpkg/installed || true
+          dockerRunArgs: |
+            --volume "${PWD}:/workspace"
+            --volume "/opt/artifacts:/opt/artifacts"
+          shell: /bin/bash
+          install: |
+            apt-get update -y
+            apt-get install -y \
+               build-essential clang cmake curl gcc git g++ imagemagick \
+               libayatana-appindicator3-dev libasound2-dev libclang-10-dev \
+               libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgtk-3-dev \
+               libpam0g-dev libpulse-dev libva-dev libxcb-randr0-dev \
+               libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev libxfixes-dev \
+               llvm-10-dev nasm ninja-build pkg-config tree python3 rpm \
+               unzip wget xz-utils libssl-dev
+            apt-get remove -y libopus-dev || true
+          run: |
+            git config --global --add safe.directory "*"
+            # Rust (tarball install; rustup overflows memory under qemu)
+            pushd /opt
+            wget -O rust.tar.gz https://static.rust-lang.org/dist/rust-${{ env.RUST_TOOLCHAIN_VERSION }}-${{ matrix.job.target }}.tar.gz
+            tar -zxvf rust.tar.gz > /dev/null && rm rust.tar.gz
+            cd rust-${{ env.RUST_TOOLCHAIN_VERSION }}-${{ matrix.job.target }} && ./install.sh
+            rm -rf rust-${{ env.RUST_TOOLCHAIN_VERSION }}-${{ matrix.job.target }}
+            mkdir -p ~/.cargo/
+            echo "[source.crates-io]" > ~/.cargo/config
+            echo "registry = 'https://github.com/rust-lang/crates.io-index'" >> ~/.cargo/config
+            popd
+
+            pushd /workspace
+            export VCPKG_ROOT=/opt/artifacts/vcpkg
+            if [[ "${{ matrix.job.arch }}" == "aarch64" ]]; then export JOBS="--jobs 3"; else export JOBS=""; fi
+
+            # Make the right systemd unit stop when the tray stops
+            sed -ie "s|\(systemctl\s\+\S\+\s\){app_name}|\1${{ env.filename }}|g" src/platform/linux.rs
+            sed -ie 's|\({home}/{p}/{app_name0}2\?.toml\)|\\"\1\\"|g' src/platform/linux.rs
+            sed -ie 's|\(/root/{p}/\)|\\"\1\\"|g' src/platform/linux.rs
+
+            cargo build --lib $JOBS --features hwcodec,flutter,unix-file-copy-paste --release
+            rm -rf target/release/deps target/release/build
+            rm -rf ~/.cargo
+
+            # Flutter (elinux for arm64)
+            git config --global --add safe.directory "*"
+            case ${{ matrix.job.arch }} in
+              aarch64)
+                export PATH=/opt/flutter-elinux/bin:$PATH
+                sed -i "s/flutter build linux --release/flutter-elinux build linux --verbose/g" ./build.py
+                sed -i "s/x64\/release/arm64\/release/g" ./build.py
+              ;;
+              x86_64) export PATH=/opt/flutter/bin:$PATH ;;
+            esac
+            popd
+
+            pushd /opt
+            wget https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${{ env.FLUTTER_VERSION }}-stable.tar.xz
+            tar xf flutter_linux_${{ env.FLUTTER_VERSION }}-stable.tar.xz
+            case ${{ matrix.job.arch }} in
+              aarch64)
+                git clone https://github.com/sony/flutter-elinux.git || true
+                pushd flutter-elinux
+                  git fetch
+                  git reset --hard ${{ env.FLUTTER_VERSION }}
+                  bin/flutter-elinux doctor -v
+                  bin/flutter-elinux precache --linux
+                popd
+                cp -R flutter/bin/cache/artifacts/engine/linux-x64/shader_lib flutter-elinux/flutter/bin/cache/artifacts/engine/linux-arm64 || true
+                rm -rf flutter
+              ;;
+              x86_64) flutter doctor -v ;;
+            esac
+
+            if [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]]; then
+              case ${{ matrix.job.arch }} in
+                aarch64) pushd /opt/flutter-elinux/flutter ;;
+                x86_64)  pushd /opt/flutter ;;
+              esac
+              git apply /workspace/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || echo "flutter patch N/A"
+              popd
+            fi
+
+            # Build flutter bundle + packages
+            pushd /workspace
+            mkdir output && chmod 777 output -R
+            export CARGO_INCREMENTAL=0
+            export DEB_ARCH=${{ matrix.job.deb_arch }}
+            mkdir -p flutter/tmpdeb/usr/share/rustdesk
+            cp ./custom_.txt ./flutter/tmpdeb/usr/share/rustdesk/custom_.txt
+
+            # whitelabel (skipped for stock rustdesk/RustDesk)
+            if [ "${{ env.appname }}" != "rustdesk" ] && [ "${{ env.appname }}" != "RustDesk" ]; then
+                sed -ie "s|\(cp .* \)tmpdeb/usr/share/rustdesk/files/systemd/|\1tmpdeb/usr/share/rustdesk/files/systemd/${{ env.appname }}.service|g" build.py
+                sed -ie "s|cp -r \(.\+\)\* \([^ ]\+\)/rustdesk|mv \1rustdesk \1${{ env.appname }}; cp -r \1\* \2/${{ env.appname }}|g" build.py
+                sed -ie "s|\(tmpdeb/[^ ]*\)rustdesk|\1${{ env.appname }}|g" build.py
+                sed -ie "s|Package: rustdesk|Package: ${{ env.appname }}|g" build.py
+                sed -ie "s|RustDesk|${{ env.appname }}|g" res/rustdesk.desktop
+                FILES=$(sed -ne "s~.*cp\s\(../\)\?\+\(.\+\.\(desktop\|service\)\)\s\+tmpdeb/.*~\2~p" build.py | sort | uniq)
+                FILES=$(echo -e "$FILES\n$(ls --color=never res/DEBIAN/*)")
+                for FILE in $(echo $FILES | sed "s/\n/ /g"); do sed -ie "s|rustdesk|${{ env.appname }}|g" $FILE; done
+                for file in "./res/rpm-flutter.spec" "./res/rpm-flutter-suse.spec"; do
+                  sed -ie "s|^\(URL:\s*\).*|\1${{ env.downloadLink }}|g" "$file"
+                  sed -ie "s|^\(Vendor:\s*\).*|\1${{ env.compname }}|g" "$file"
+                  sed -ie '/\${\?HBB}\?/!{/\(^Name:\|\/usr\|\/etc\|systemctl\)/s|rustdesk|${{ env.appname }}|g}' "$file"
+                  sed -ie '/\${\?HBB}\?/{/^install/s|\(\/usr\/.*\/\)rustdesk|\1${{ env.appname }}|g}' "$file"
+                  sed -ie '/\${\?HBB}\?/{/^mkdir/s|rustdesk|${{ env.appname }}|g}' "$file"
+                  for extension in ".desktop" "-link.desktop" ".service"; do
+                    sed -ie "/^%files$/i\\mv %{buildroot}/usr/share/${{ env.appname }}/files/rustdesk$extension %{buildroot}/usr/share/${{ env.appname }}/files/${{ env.appname }}$extension" "$file"
+                    sed -ie "/^%files$/i\\sed -ie 's|RustDesk|${{ env.appname }}|g' %{buildroot}/usr/share/${{ env.appname }}/files/${{ env.appname }}$extension" "$file"
+                    sed -ie "/^%files$/i\\sed -ie 's|rustdesk|${{ env.appname }}|g' %{buildroot}/usr/share/${{ env.appname }}/files/${{ env.appname }}$extension" "$file"
+                  done
+                  sed -ie '/^%files$/i\\\n' "$file"
+                done
+            fi
+
+            python3 ./build.py --flutter --skip-cargo
+            for name in *.deb; do mv "$name" /workspace/output/"${{ env.filename }}-${{ matrix.job.arch }}.deb"; done
+
+            # Fedora rpm
+            case ${{ matrix.job.arch }} in
+              aarch64) sed -i "s/linux\/x64/linux\/arm64/g" ./res/rpm-flutter.spec ;;
+            esac
+            HBB=`pwd` rpmbuild ./res/rpm-flutter.spec -bb
+            for name in ~/rpmbuild/RPMS/${{ matrix.job.arch }}/*.rpm; do mv "$name" /workspace/output/"${{ env.filename }}-${{ matrix.job.arch }}.rpm"; done
+
+            # openSUSE rpm
+            case ${{ matrix.job.arch }} in
+              aarch64) sed -i "s/linux\/x64/linux\/arm64/g" ./res/rpm-flutter-suse.spec ;;
+            esac
+            HBB=`pwd` rpmbuild ./res/rpm-flutter-suse.spec -bb
+            for name in ~/rpmbuild/RPMS/${{ matrix.job.arch }}/*.rpm; do mv "$name" /workspace/output/"${{ env.filename }}-suse-${{ matrix.job.arch }}.rpm"; done
+
+      # ── Arch (x86_64 only) ──
+      - name: Patch archlinux PKGBUILD
+        continue-on-error: true
+        if: matrix.job.arch == 'x86_64'
+        run: sed -i "s/x86_64/${{ matrix.job.arch }}/g" res/PKGBUILD
+
+      - name: Build archlinux package
+        continue-on-error: true
+        if: matrix.job.arch == 'x86_64'
+        uses: rustdesk-org/arch-makepkg-action@master
+        with:
+          packages:
+          scripts: |
+            cd res && HBB=`pwd`/.. FLUTTER=1 makepkg -f
+
+      - name: Rename archlinux package
+        continue-on-error: true
+        if: matrix.job.arch == 'x86_64'
+        run: |
+          cp ./res/rustdesk-${{ env.VERSION }}-0-x86_64.pkg.tar.zst ./output/${{ env.filename }}-${{ matrix.job.arch }}.pkg.tar.zst || true
+
+      - name: List outputs
+        run: ls -lh ./output/ || echo "no outputs"
+
+      # deb-only artifact for the AppImage / flatpak jobs
+      - name: Upload deb (for appimage/flatpak)
         uses: actions/upload-artifact@v4
         with:
-          name: linux-x86_64-${{ env.VERSION }}
-          path: ./rustdesk/output/*
+          name: deb-${{ matrix.job.arch }}
+          path: ./output/${{ env.filename }}-${{ matrix.job.arch }}.deb
+          retention-days: 7
+
+      # all packages for the release
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.job.arch }}
+          path: ./output/*
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────
+  build-appimage:
+    needs: [detect-version, build-rustdesk-linux]
+    if: needs.detect-version.outputs.should_build == 'true'
+    name: "📦 AppImage ${{ matrix.job.arch }}"
+    runs-on: ${{ matrix.job.on }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { arch: x86_64,  on: ubuntu-22.04 }
+          - { arch: aarch64, on: ubuntu-22.04-arm }
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - name: Checkout RustDesk source
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: refs/tags/${{ env.VERSION }}
+          submodules: recursive
+      - name: Checkout builder repo
+        uses: actions/checkout@v4
+        with:
+          path: builder
+      - name: Load config
+        run: python3 builder/scripts/load-config.py "builder/${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
+      - name: Map config → build env
+        run: |
+          echo "appname=${{ env.CUSTOM_APPNAME }}" >> $GITHUB_ENV
+          echo "filename=${{ env.CUSTOM_FILENAME }}" >> $GITHUB_ENV
+      - name: Download deb
+        uses: actions/download-artifact@v4
+        with:
+          name: deb-${{ matrix.job.arch }}
+          path: .
+      - name: Prepare deb
+        run: mv ${{ env.filename }}-${{ matrix.job.arch }}.deb appimage/rustdesk.deb
+      - name: Build AppImage
+        shell: bash
+        run: |
+          if [ "${{ env.appname }}" != "rustdesk" ] && [ "${{ env.appname }}" != "RustDesk" ]; then
+            sed -ie "s|rustdesk|${{ env.appname }}|g" appimage/*
+            mv appimage/rustdesk.deb "appimage/${{ env.filename }}.deb" 2>/dev/null || true
+          fi
+          sudo apt-get update -y
+          sudo apt-get install -y libarchive-tools libfuse2
+          sudo pip3 install "setuptools_scm<10"
+          sudo pip3 install git+https://github.com/rustdesk-org/appimage-builder.git
+          pushd appimage
+          sudo appimage-builder --skip-tests --recipe ./AppImageBuilder-${{ matrix.job.arch }}.yml
+          # recipe output is <name>-<version>-<arch>.AppImage (name = rustdesk or custom)
+          sudo mv ./*-${{ env.VERSION }}-${{ matrix.job.arch }}.AppImage ./${{ env.filename }}-${{ matrix.job.arch }}.AppImage
+          popd
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: appimage-${{ matrix.job.arch }}
+          path: ./appimage/${{ env.filename }}-${{ matrix.job.arch }}.AppImage
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────
+  build-flatpak:
+    needs: [detect-version, build-rustdesk-linux]
+    if: needs.detect-version.outputs.should_build == 'true'
+    name: "📦 flatpak ${{ matrix.job.arch }}"
+    runs-on: ${{ matrix.job.on }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { arch: x86_64,  distro: ubuntu22.04, on: ubuntu-22.04 }
+          - { arch: aarch64, distro: ubuntu22.04, on: ubuntu-22.04-arm }
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - name: Checkout RustDesk source
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: refs/tags/${{ env.VERSION }}
+          submodules: recursive
+      - name: Checkout builder repo
+        uses: actions/checkout@v4
+        with:
+          path: builder
+      - name: Load config
+        run: python3 builder/scripts/load-config.py "builder/${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
+      - name: Map config → build env
+        run: echo "filename=${{ env.CUSTOM_FILENAME }}" >> $GITHUB_ENV
+      - name: Download deb
+        uses: actions/download-artifact@v4
+        with:
+          name: deb-${{ matrix.job.arch }}
+          path: .
+      - name: Prepare deb
+        run: mv ${{ env.filename }}-${{ matrix.job.arch }}.deb flatpak/rustdesk.deb
+      - uses: rustdesk-org/run-on-arch-action@amd64-support
+        name: Build flatpak (container)
+        timeout-minutes: 40
+        with:
+          arch: ${{ matrix.job.arch }}
+          distro: ${{ matrix.job.distro }}
+          githubToken: ${{ github.token }}
+          dockerRunArgs: |
+            --volume "${PWD}:/workspace"
+          shell: /bin/bash
+          install: |
+            apt-get update -y
+            apt-get install -y git flatpak flatpak-builder
+          run: |
+            git config --global --add safe.directory "*"
+            pushd /workspace/flatpak
+            flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+            git clone https://github.com/flathub/shared-modules.git --depth=1
+            flatpak-builder --user --install-deps-from=flathub -y --force-clean --repo=repo ./build ./rustdesk.json
+            flatpak build-bundle ./repo ${{ env.filename }}-${{ matrix.job.arch }}.flatpak com.rustdesk.RustDesk
+      - name: Upload flatpak
+        uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-${{ matrix.job.arch }}
+          path: ./flatpak/${{ env.filename }}-${{ matrix.job.arch }}.flatpak
           retention-days: 30
 
   # ─────────────────────────────────────────────────────────────────
   create-release:
     name: "📦 Release"
-    needs: [detect-version, build-linux]
+    needs: [detect-version, build-rustdesk-linux, build-appimage, build-flatpak]
     if: |
       always() &&
       needs.detect-version.outputs.should_build == 'true' &&
-      needs.build-linux.result == 'success'
+      needs.build-rustdesk-linux.result == 'success'
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.detect-version.outputs.version }}
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
@@ -434,22 +709,18 @@ jobs:
       - name: Flatten assets
         run: |
           mkdir -p final-assets
-          find release-assets -type f \( -name "*.deb" -o -name "*.rpm" \) -exec cp {} final-assets/ \;
+          find release-assets -type f \( \
+            -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \
+            -o -name "*.flatpak" -o -name "*.pkg.tar.zst" \) \
+            -exec cp {} final-assets/ \;
           echo "=== Release assets ==="
           ls -lh final-assets/
-      - name: Create release
+      # No body: — adds Linux variants to the existing v<version> release
+      - name: Add Linux builds to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ env.VERSION }}"
           name: "RustDesk v${{ env.VERSION }} — Custom Build"
-          body: |
-            ## RustDesk Custom Client v${{ env.VERSION }}
-            Pre-configured for `ir.remote-neo.com`
-            | Platform | Status |
-            |----------|--------|
-            | 🐧 Linux x86_64 | ✅ |
-            | 🪟 Windows | ⏳ Coming soon |
-            | 🤖 Android | ⏳ Coming soon |
           files: final-assets/*
           fail_on_unmatched_files: false
         env:
@@ -473,11 +744,10 @@ jobs:
         run: |
           echo "${{ env.VERSION }}" >> docs/versions.txt
           sort -Vru docs/versions.txt -o docs/versions.txt
-          cat docs/versions.txt
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/versions.txt
-          git diff --cached --quiet || git commit -m "📦 Built v${{ env.VERSION }} (Linux)"
+          git diff --cached --quiet || git commit -m "📦 Built v${{ env.VERSION }} (Linux full)"
           git push
