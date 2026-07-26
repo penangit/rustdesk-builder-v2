@@ -363,6 +363,7 @@
       const res = await fetch(RELEASES_API, { headers: GH_HEADERS });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = (await res.json()).filter(r => !r.draft);
+      if (data.length) latestTag = data[0].tag_name;
       if (!data.length) {
         el.innerHTML = `<div class="state">
           <svg class="state-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 2.6 20.5 7v10L12 21.4 3.5 17V7z"/><path d="M3.7 7 12 11.6 20.3 7M12 11.6V21.2"/></svg>
@@ -446,6 +447,7 @@
 
   /* ---------------- build-in-progress banner ---------------- */
   let activeBuild = null;   // { started, title, url }
+  let latestTag = '';       // newest release tag, used to replace "latest" in the build banner
   function fmtElapsed(ms) {
     const s = Math.max(0, Math.floor(ms/1000)), m = Math.floor(s/60), h = Math.floor(m/60);
     if (h > 0) return `${h}h ${m%60}m`;
@@ -457,7 +459,7 @@
     if (!activeBuild) { el.classList.remove('show'); return; }
     const elapsed = fmtElapsed(Date.now() - activeBuild.started);
     el.innerHTML = `<span class="bspin"></span>
-      <span class="bmain"><span class="btitle">Building ${activeBuild.version ? 'RustDesk ' + activeBuild.version : ''}</span>
+      <span class="bmain"><span class="btitle">Building</span>
       <span class="bmeta"> — ${esc(activeBuild.title)} · ${elapsed} elapsed</span></span>
       <a href="${activeBuild.url}" target="_blank" rel="noopener">view run ↗</a>`;
     el.classList.add('show');
@@ -470,10 +472,12 @@
       const runs = (await res.json()).workflow_runs || [];
       const active = runs.filter(r => r.status === 'in_progress' || r.status === 'queued');
       if (active.length) {
-        const titles = [...new Set(active.map(r => (r.display_title || r.name)))];
+        // "latest" in a run's title (blank version input) → show the real newest version
+        const ver = (latestTag || '').replace(/^v/i, '');
+        const titles = [...new Set(active.map(r => (r.display_title || r.name)))]
+          .map(t => ver ? t.replace(/\blatest\b/gi, ver) : t);
         const started = Math.min(...active.map(r => new Date(r.run_started_at || r.created_at).getTime()));
-        const verMatch = titles.join(' ').match(/\d+\.\d+\.\d+/);
-        activeBuild = { started, title: titles.join(', '), url: active[0].html_url, version: verMatch ? verMatch[0] : '' };
+        activeBuild = { started, title: titles.join(', '), url: active[0].html_url };
         paintBanner();
         if (!wasBuilding) wasBuilding = true;
       } else {
