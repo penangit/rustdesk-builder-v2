@@ -1,0 +1,495 @@
+name: "🍎 Build macOS"
+run-name: "🍎 macOS · ${{ github.event.inputs.rustdesk_version || 'latest' }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      rustdesk_version:
+        description: "RustDesk version to build (blank = latest release)"
+        required: false
+        default: ""
+      force_build:
+        description: "Build even if release exists (keep 'true' to add to an existing version)"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+env:
+  RUST_VERSION: "1.75"           # for the bridge job
+  MAC_RUST_VERSION: "1.81"       # macOS build toolchain (matches rdgen)
+  FLUTTER_VERSION: "3.24.5"
+  BRIDGE_FLUTTER_VERSION: "3.22.3"
+  FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
+  CARGO_EXPAND_VERSION: "1.0.95"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  CONFIG_PATH: configs/RustDesk.json
+  # optional Apple code-signing (leave the secret unset to ship an UNSIGNED build)
+  MACOS_P12_BASE64: "${{ secrets.MACOS_P12_BASE64 }}"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  detect-version:
+    name: "🔍 Detect version"
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve version
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MANUAL="${{ github.event.inputs.rustdesk_version }}"
+          FORCE="${{ github.event.inputs.force_build }}"
+          if [ -n "$MANUAL" ]; then
+            echo "version=$MANUAL" >> $GITHUB_OUTPUT
+            if [ "$FORCE" = "true" ]; then echo "should_build=true" >> $GITHUB_OUTPUT
+            elif gh release view "v${MANUAL}" --repo "${{ github.repository }}" >/dev/null 2>&1; then echo "should_build=false" >> $GITHUB_OUTPUT
+            else echo "should_build=true" >> $GITHUB_OUTPUT; fi
+            exit 0
+          fi
+          LATEST=$(curl -sf "https://api.github.com/repos/rustdesk/rustdesk/releases/latest" | jq -r '.tag_name // empty' | sed 's/^v//')
+          [ -z "$LATEST" ] && LATEST=$(curl -sf "https://api.github.com/repos/rustdesk/rustdesk/tags?per_page=1" | jq -r '.[0].name // empty' | sed 's/^v//')
+          if [ -z "$LATEST" ]; then echo "::error::Could not determine latest RustDesk version"; echo "should_build=false" >> $GITHUB_OUTPUT; exit 0; fi
+          if [ "$FORCE" = "true" ]; then echo "version=$LATEST" >> $GITHUB_OUTPUT; echo "should_build=true" >> $GITHUB_OUTPUT
+          elif gh release view "v${LATEST}" --repo "${{ github.repository }}" >/dev/null 2>&1; then echo "should_build=false" >> $GITHUB_OUTPUT
+          else echo "version=$LATEST" >> $GITHUB_OUTPUT; echo "should_build=true" >> $GITHUB_OUTPUT; fi
+
+  # ─────────────────────────────────────────────────────────────────
+  generate-bridge:
+    name: "🌉 Generate bridge"
+    needs: detect-version
+    if: needs.detect-version.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - name: Checkout RustDesk source
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: refs/tags/${{ env.VERSION }}
+          submodules: recursive
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang cmake curl gcc git g++ libclang-dev libgtk-3-dev llvm-dev nasm ninja-build pkg-config wget
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: "rustfmt"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: bridge
+      - name: Install Flutter (bridge version)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.BRIDGE_FLUTTER_VERSION }}
+          cache: true
+      - name: Install bridge codegen
+        run: |
+          cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
+          cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
+          pushd flutter
+          sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' pubspec.yaml
+          flutter pub get
+          popd
+      - name: Run flutter_rust_bridge_codegen
+        run: |
+          ~/.cargo/bin/flutter_rust_bridge_codegen \
+            --rust-input ./src/flutter_ffi.rs \
+            --dart-output ./flutter/lib/generated_bridge.dart \
+            --c-output ./flutter/macos/Runner/bridge_generated.h
+          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+      - name: Upload bridge artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-artifact
+          path: |
+            ./src/bridge_generated.rs
+            ./src/bridge_generated.io.rs
+            ./flutter/lib/generated_bridge.dart
+            ./flutter/lib/generated_bridge.freezed.dart
+            ./flutter/macos/Runner/bridge_generated.h
+            ./flutter/ios/Runner/bridge_generated.h
+
+  # ─────────────────────────────────────────────────────────────────
+  build-macos:
+    name: "🍎 DMG ${{ matrix.job.arch }}"
+    needs: [detect-version, generate-bridge]
+    if: needs.detect-version.outputs.should_build == 'true'
+    runs-on: ${{ matrix.job.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { arch: x86_64,  os: macos-15-intel, target: x86_64-apple-darwin,  vcpkg-triplet: x64-osx,   extra: "" }
+          - { arch: aarch64, os: macos-14,       target: aarch64-apple-darwin, vcpkg-triplet: arm64-osx, extra: "--screencapturekit" }
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout RustDesk source
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: refs/tags/${{ env.VERSION }}
+          submodules: recursive
+
+      - name: Checkout builder repo
+        uses: actions/checkout@v4
+        with:
+          path: builder
+
+      - name: Load config
+        run: python3 builder/scripts/load-config.py "builder/${{ env.CONFIG_PATH }}" >> $GITHUB_ENV
+
+      - name: Map config → build env
+        run: |
+          echo "appname=${{ env.CUSTOM_APPNAME }}" >> $GITHUB_ENV
+          echo "filename=${{ env.CUSTOM_FILENAME }}" >> $GITHUB_ENV
+          echo "compname=${{ env.CUSTOM_COMPNAME }}" >> $GITHUB_ENV
+          echo "server=${{ env.CUSTOM_SERVER }}" >> $GITHUB_ENV
+          echo "key=${{ env.CUSTOM_KEY }}" >> $GITHUB_ENV
+          echo "apiServer=${{ env.CUSTOM_API_SERVER }}" >> $GITHUB_ENV
+          echo "urlLink=${{ env.CUSTOM_URL_LINK }}" >> $GITHUB_ENV
+          echo "downloadLink=${{ env.CUSTOM_DOWNLOAD_LINK }}" >> $GITHUB_ENV
+          echo "delayFix=${{ env.CUSTOM_DELAY_FIX }}" >> $GITHUB_ENV
+          echo "xOffline=${{ env.CUSTOM_X_OFFLINE }}" >> $GITHUB_ENV
+          echo "hidecm=${{ env.CUSTOM_HIDE_CM }}" >> $GITHUB_ENV
+          echo "removeNewVersionNotif=${{ env.CUSTOM_REMOVE_NEW_VERSION_NOTIF }}" >> $GITHUB_ENV
+
+      - name: Install build tools (brew)
+        shell: bash
+        run: |
+          brew install imagemagick potrace cmake gcc wget ninja llvm create-dmg || true
+          if ! command -v pkg-config &>/dev/null; then brew install pkg-config; fi
+          echo "$(brew --prefix imagemagick)/bin" >> $GITHUB_PATH
+
+      - name: Install NASM 2.16 (brew ships incompatible 3.x)
+        shell: bash
+        run: |
+          wget https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
+          unzip -o nasm-2.16.03-macosx.zip
+          sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm
+          nasm --version
+
+      # ── customizations (BSD sed → `sed -i ''`) ──
+      - name: Set server, key, and apiServer
+        shell: bash
+        run: |
+          sed -i '' -e 's|rs-ny.rustdesk.com|${{ env.server }}|' ./libs/hbb_common/src/config.rs
+          sed -i '' -e 's|OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=|${{ env.key }}|' ./libs/hbb_common/src/config.rs
+          sed -i '' -e 's|https://admin.rustdesk.com|${{ env.apiServer }}|' ./src/common.rs
+
+      - name: Change company name
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i '' -e 's|Purslane Tech Pte. Ltd.|${{ env.compname }}|' ./flutter/macos/Runner/Configs/AppInfo.xcconfig
+          sed -i '' -e 's|Purslane Ltd.|${{ env.compname }}|' ./flutter/macos/Runner/Configs/AppInfo.xcconfig
+          sed -i '' -e 's|Purslane Tech Pte. Ltd.|${{ env.compname }}|' ./Cargo.toml
+          sed -i '' -e 's|Purslane Ltd|${{ env.compname }}|' ./src/main.rs
+          sed -i '' -e 's|Purslane Tech Pte. Ltd.|${{ env.compname }}|' ./flutter/lib/desktop/pages/desktop_setting_page.dart
+
+      - name: Change appname (skipped for stock rustdesk/RustDesk)
+        if: env.appname != 'RustDesk' && env.appname != ''
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i '' -e 's|<key>CFBundleName</key>.*<string>.*</string>|<key>CFBundleName</key>\n\t<string>${{ env.appname }}</string>|' ./flutter/macos/Runner/Info.plist
+          sed -i '' -e 's|<key>CFBundleDisplayName</key>.*<string>.*</string>|<key>CFBundleDisplayName</key>\n\t<string>${{ env.appname }}</string>|' ./flutter/macos/Runner/Info.plist
+          sed -i '' -e 's|PRODUCT_NAME = .*|PRODUCT_NAME = ${{ env.appname }}|' ./flutter/macos/Runner/Configs/AppInfo.xcconfig
+          sed -i '' -e 's/PRODUCT_NAME = "RustDesk"/PRODUCT_NAME = "${{ env.appname }}"/' ./flutter/macos/Runner.xcodeproj/project.pbxproj
+          find ./src/lang -name "*.rs" -exec sed -i '' -e 's|RustDesk|${{ env.appname }}|' {} \;
+          sed -i '' -e "s|RustDesk.app|\"${{ env.appname }}.app\"|" build.py
+
+      - name: Change url to custom
+        if: env.urlLink != 'https://rustdesk.com' && env.urlLink != ''
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i '' -e 's|https://rustdesk.com|${{ env.urlLink }}|' ./build.py
+          sed -i '' -e "s|launchUrl(Uri.parse('https://rustdesk.com'));|launchUrl(Uri.parse('${{ env.urlLink }}'));|" ./flutter/lib/common.dart
+          sed -i '' -e "s|launchUrlString('https://rustdesk.com');|launchUrlString('${{ env.urlLink }}');|" ./flutter/lib/desktop/pages/desktop_setting_page.dart
+
+      - name: Change download link to custom
+        if: env.downloadLink != 'https://rustdesk.com/download' && env.downloadLink != ''
+        continue-on-error: true
+        shell: bash
+        run: |
+          sed -i '' -e 's|https://rustdesk.com/download|${{ env.downloadLink }}|' ./flutter/lib/desktop/pages/desktop_home_page.dart
+          sed -i '' -e 's|https://rustdesk.com/download|${{ env.downloadLink }}|' ./flutter/lib/mobile/pages/connection_page.dart
+
+      - name: Allow custom.txt + remove setup-server tip
+        continue-on-error: true
+        shell: bash
+        run: |
+          wget https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/allowCustom.py
+          python3 allowCustom.py
+          wget https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/removeSetupServerTip.diff
+          git apply removeSetupServerTip.diff || echo "removeSetupServerTip patch N/A"
+
+      - name: Fix connection delay
+        if: env.delayFix == 'true'
+        continue-on-error: true
+        shell: bash
+        run: sed -i '' -e 's|!key.is_empty()|false|' ./src/client.rs
+
+      - name: Use X for offline display
+        if: env.xOffline == 'true'
+        continue-on-error: true
+        run: |
+          wget https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/xoffline.diff
+          git apply xoffline.diff || echo "xoffline patch N/A"
+
+      - name: hide-cm
+        if: env.hidecm == 'true'
+        continue-on-error: true
+        run: |
+          wget https://raw.githubusercontent.com/bryangerlach/rdgen/refs/heads/master/.github/patches/hidecm.diff
+          git apply hidecm.diff || echo "hidecm patch N/A"
+
+      - name: removeNewVersionNotif
+        if: env.removeNewVersionNotif == 'true'
+        continue-on-error: true
+        shell: bash
+        run: sed -i '' -e 's|updateUrl.isNotEmpty|false|' ./flutter/lib/desktop/pages/desktop_home_page.dart
+
+      - name: Add archive dependency to pubspec
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "  archive: ^3.6.1" > ./flutter/temp_dependency.txt
+          awk '/intl:/{print;system("cat ./flutter/temp_dependency.txt");next}1' ./flutter/pubspec.yaml > ./flutter/pubspec.yaml.tmp
+          mv ./flutter/pubspec.yaml.tmp ./flutter/pubspec.yaml
+          rm ./flutter/temp_dependency.txt
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch flutter
+        continue-on-error: true
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]] && git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || echo "flutter patch N/A"
+
+      - name: Workaround for flutter scheduler issue
+        shell: bash
+        run: |
+          cd "$(dirname "$(which flutter)")"
+          sed -i '' -e 's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' ../packages/flutter/lib/src/scheduler/binding.dart || true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.MAC_RUST_VERSION }}
+          targets: ${{ matrix.job.target }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ matrix.job.os }}
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        run: |
+          if ! $VCPKG_ROOT/vcpkg install --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do echo "$_1:"; cat "$_1"; echo ""; done
+            exit 1
+          fi
+
+      - name: Set minimum macOS version (arm64)
+        if: matrix.job.arch == 'aarch64'
+        shell: bash
+        run: |
+          MIN="12.3"
+          sed -i '' -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN}/" build.py
+          sed -i '' -e "s/platform :osx, '.*'/platform :osx, '${MIN}'/" flutter/macos/Podfile
+          sed -i '' -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN}\"/" Cargo.toml
+
+      - name: Build rustdesk (flutter + hwcodec)
+        shell: bash
+        run: |
+          ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra }}
+
+      # ── PASSWORD FIX: place the base64 config next to the binary in the .app bundle ──
+      - name: Embed custom config into the .app bundle
+        shell: bash
+        run: |
+          APP=$(find ./flutter/build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -n 1)
+          echo "App bundle: $APP"
+          echo -n '${{ env.CUSTOM_B64 }}' > "$APP/Contents/MacOS/custom_.txt"
+          ls -l "$APP/Contents/MacOS/custom_.txt"
+
+      - name: Install rcodesign (only if signing)
+        if: env.MACOS_P12_BASE64 != ''
+        shell: bash
+        run: |
+          pushd /tmp
+          wget https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F0.22.0/apple-codesign-0.22.0-macos-universal.tar.gz
+          tar -zxvf apple-codesign-0.22.0-macos-universal.tar.gz
+          sudo mv apple-codesign-0.22.0-macos-universal/rcodesign /usr/local/bin
+          popd
+
+      - name: Sign the .app (optional — skipped without a certificate)
+        if: env.MACOS_P12_BASE64 != ''
+        shell: bash
+        run: |
+          cd ./flutter/build/macos/Build/Products/Release
+          APP=$(find . -maxdepth 1 -name "*.app" | head -n 1)
+          echo "${{ secrets.MACOS_P12_BASE64 }}" | base64 --decode > certificate.p12
+          find "$APP/Contents/Frameworks" -type f -not -name ".*" -exec \
+            rcodesign sign --p12-file certificate.p12 --p12-password "${{ secrets.MACOS_P12_PASSWORD }}" --code-signature-flags runtime {} \; || true
+          rcodesign sign --p12-file certificate.p12 --p12-password "${{ secrets.MACOS_P12_PASSWORD }}" --code-signature-flags runtime "$APP" || true
+          rm -f certificate.p12
+
+      - name: Create DMG
+        shell: bash
+        run: |
+          cd ./flutter/build/macos/Build/Products/Release
+          APP=$(find . -maxdepth 1 -name "*.app" | head -n 1)
+          APPNAME=$(basename "$APP" .app)
+          create-dmg \
+            --volname "$APPNAME" \
+            --window-pos 200 120 --window-size 800 400 --icon-size 100 \
+            --icon "$APP" 200 190 --hide-extension "$(basename "$APP")" \
+            --app-drop-link 600 185 \
+            "${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg" "$APP" \
+            || create-dmg --volname "$APPNAME" "${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg" "$APP"
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          mv "${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg" "$GITHUB_WORKSPACE/out/"
+          ls -lh "$GITHUB_WORKSPACE/out/"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.job.arch }}
+          path: out/${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────
+  create-release:
+    name: "📦 Release"
+    needs: [detect-version, build-macos]
+    if: |
+      always() &&
+      needs.detect-version.outputs.should_build == 'true' &&
+      needs.build-macos.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: false
+      - name: Flatten assets
+        run: |
+          mkdir -p final-assets
+          find release-assets -type f -name "*.dmg" -exec cp {} final-assets/ \;
+          echo "=== Release assets ==="; ls -lh final-assets/
+      - name: Build release notes (changelog section only)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - "${{ env.VERSION }}" > RELEASE_NOTES.md << 'PYEOF'
+          import sys, os, json, re, urllib.request
+          ver = sys.argv[1]
+          hdr = {"Accept": "application/vnd.github+json", "User-Agent": "rd-builder"}
+          tok = os.environ.get("GH_TOKEN", "")
+          if tok:
+              hdr["Authorization"] = "Bearer " + tok
+          body = ""
+          for tag in (ver, "v" + ver):
+              try:
+                  req = urllib.request.Request("https://api.github.com/repos/rustdesk/rustdesk/releases/tags/" + tag, headers=hdr)
+                  body = (json.load(urllib.request.urlopen(req, timeout=20)).get("body") or "")
+                  if body:
+                      break
+              except Exception:
+                  pass
+          m = re.search(r"<summary>\s*Changelog\s*</summary>(.*?)</details>", body, re.S | re.I)
+          if m:
+              cl = m.group(1).strip()
+          else:
+              m2 = re.search(r"(?:^|\n)#{0,6}\s*Changelog\s*\n(.*)$", body, re.S | re.I)
+              cl = re.sub(r"</?(?:details|summary)[^>]*>", "", m2.group(1)).strip() if m2 else ""
+          parts = [
+              "Custom **RustDesk** build — connects to `ir.remote-neo.com` with password + click approval.\n",
+              "Built from the official RustDesk `%s` source with the server + config baked in. "
+              "All variants: [download page](https://penangit.github.io/rustdesk-builder-v2/).\n" % ver,
+              "---\n",
+              "## Changelog — RustDesk %s\n" % ver,
+              cl if cl else "_Upstream changelog unavailable._",
+              "\n> Mirrored from [rustdesk/rustdesk](https://github.com/rustdesk/rustdesk/releases/tag/%s)." % ver,
+          ]
+          print("\n".join(parts))
+          PYEOF
+          echo "=== release notes ==="; cat RELEASE_NOTES.md
+      - name: Add macOS builds to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ env.VERSION }}"
+          name: "RustDesk v${{ env.VERSION }} — Custom Build"
+          body_path: RELEASE_NOTES.md
+          files: final-assets/*
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─────────────────────────────────────────────────────────────────
+  update-pages:
+    name: "🌐 Update download page"
+    needs: [detect-version, create-release]
+    if: needs.create-release.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.detect-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Update versions list
+        run: |
+          echo "${{ env.VERSION }}" >> docs/versions.txt
+          sort -Vru docs/versions.txt -o docs/versions.txt
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/versions.txt
+          git diff --cached --quiet || git commit -m "🍎 Built v${{ env.VERSION }} (macOS)"
+          git push
