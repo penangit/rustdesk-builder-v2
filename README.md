@@ -139,6 +139,10 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 | `ANDROID_KEY_PASSWORD` | the key password |
 
 > ⚠️ **Never commit** `rustdesk-release.jks` or `keystore_b64.txt`. They belong only in Secrets.
+>
+> These four are for Android. Optional code-signing secrets for **macOS** and **Windows**
+> (`MACOS_P12_BASE64`, `MACOS_P12_PASSWORD`, `WINDOWS_PFX_BASE64`, `WINDOWS_PFX_PASSWORD`) are covered in
+> [Step 8](#step-8--optional-code-signing) — skip them if you don't have certificates.
 
 ### Step 5 — Enable workflow write permissions
 Repo → **Settings → Actions → General → Workflow permissions** → select **Read and write permissions**
@@ -161,6 +165,35 @@ Repo → **Actions** → pick **🪟 Build Windows / 🐧 Build Linux / 🤖 Bui
 
 Run them one at a time the first time. When a run finishes, its files appear in the Release and on the
 download page automatically.
+
+Once you're happy, use **🚀 Build All** to build every platform in one run — and it runs on a daily
+schedule that only builds when a *new* stable RustDesk version appears (nothing new = it skips fast).
+(`build-all.yml` calls the four workflows as reusable workflows, so their filenames in
+`.github/workflows/` must be exactly `build-windows.yml`, `build-linux.yml`, `build-android.yml`,
+`build-macos.yml`.)
+
+### Step 8 — Optional: code signing
+
+By default the builds are **unsigned** and work fine — users just get a one-time OS warning. If you have
+signing certificates, add the matching secrets and the workflows sign automatically.
+
+**macOS** (Apple Developer ID cert, from the Apple Developer Program — ~$99/yr):
+1. Export your *Developer ID Application* certificate as a `.p12`.
+2. Base64 it: `base64 -i cert.p12 -o cert_b64.txt` (macOS) or `base64 -w0 cert.p12 > cert_b64.txt` (Linux).
+3. Add secrets `MACOS_P12_BASE64` (the base64 string) and `MACOS_P12_PASSWORD` (the `.p12` password).
+
+Without these, the DMG is unsigned → first launch shows *"unidentified developer / damaged"*; users
+right-click the app → **Open**, or run `xattr -cr /Applications/RustDesk.app` once. (Full notarization,
+which removes the warning entirely, is a further step we can add if you go that route.)
+
+**Windows** (Authenticode code-signing cert, e.g. from a CA like DigiCert/Sectigo):
+1. Export the cert as a `.pfx`.
+2. Base64 it (PowerShell): `[Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx")) > pfx_b64.txt`.
+3. Add secrets `WINDOWS_PFX_BASE64` and `WINDOWS_PFX_PASSWORD`.
+
+Without these, the `.exe`/`.msi` are unsigned → SmartScreen shows *"unknown publisher"*; users click
+**More info → Run anyway**. (Linux and Android don't use OS publisher certs the same way — Android is
+already signed with your keystore from Step 3.)
 
 ## 6. Config field reference
 
@@ -236,7 +269,7 @@ passwords), or keep a private build repo that publishes releases to a separate p
   repos.
 
 ## 11. Credits
-- Partner in Crime **[VenimK](https://github.com/venimk)**
+
 - Build logic adapted from **[bryangerlach/rdgen](https://github.com/bryangerlach/rdgen)**
 - Config generator: **[rdgen.crayoneater.org](https://rdgen.crayoneater.org/)**
 - Upstream app: **[rustdesk/rustdesk](https://github.com/rustdesk/rustdesk)**
