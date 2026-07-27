@@ -346,11 +346,20 @@ jobs:
           sed -i '' -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN}/" build.py
           sed -i '' -e "s/platform :osx, '.*'/platform :osx, '${MIN}'/" flutter/macos/Podfile
           sed -i '' -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN}\"/" Cargo.toml
+          # rdgen also sets it in the Xcode project (note the `= X;` syntax) — WITHOUT this the
+          # Flutter/Xcode Runner compiles against a different min-version than the Rust/vcpkg side,
+          # which breaks the aarch64 link/codegen. This line was missing and is the likely arm64 failure.
+          sed -i '' -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN};/" flutter/macos/Runner.xcodeproj/project.pbxproj
 
       - name: Build rustdesk (flutter + hwcodec)
         shell: bash
         run: |
+          set -x
+          # aarch64 legs sometimes choke on hwcodec/ScreenCaptureKit; capture the
+          # real failure instead of dying silently three steps later.
           ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra }}
+          echo "=== build.py finished, listing product dir ==="
+          find ./flutter/build/macos/Build/Products/Release -maxdepth 1 -name "*.app" -print || true
 
       # ── PASSWORD FIX: place the base64 config next to the binary in the .app bundle ──
       - name: Embed custom config into the .app bundle
@@ -386,18 +395,26 @@ jobs:
       - name: Create DMG
         shell: bash
         run: |
+          set -x
           cd ./flutter/build/macos/Build/Products/Release
           APP=$(find . -maxdepth 1 -name "*.app" | head -n 1)
+          if [ -z "$APP" ]; then echo "::error::No .app bundle found — the build step failed."; exit 1; fi
           APPNAME=$(basename "$APP" .app)
+          DMG="${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg"
+          # create-dmg uses AppleScript to lay out icons; that intermittently fails on
+          # headless CI runners (esp. arm64). Try the pretty layout, then a plain
+          # create-dmg, then hdiutil as a guaranteed fallback so the job always ships a DMG.
           create-dmg \
             --volname "$APPNAME" \
             --window-pos 200 120 --window-size 800 400 --icon-size 100 \
             --icon "$APP" 200 190 --hide-extension "$(basename "$APP")" \
             --app-drop-link 600 185 \
-            "${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg" "$APP" \
-            || create-dmg --volname "$APPNAME" "${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg" "$APP"
+            "$DMG" "$APP" \
+          || create-dmg --volname "$APPNAME" "$DMG" "$APP" \
+          || hdiutil create -volname "$APPNAME" -srcfolder "$APP" -ov -format UDZO "$DMG"
+          if [ ! -f "$DMG" ]; then echo "::error::DMG creation failed by all methods."; exit 1; fi
           mkdir -p "$GITHUB_WORKSPACE/out"
-          mv "${{ env.filename }}-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg" "$GITHUB_WORKSPACE/out/"
+          mv "$DMG" "$GITHUB_WORKSPACE/out/"
           ls -lh "$GITHUB_WORKSPACE/out/"
 
       - name: Upload DMG

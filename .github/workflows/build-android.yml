@@ -418,10 +418,14 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          # kill the dead jcenter() repo (offline since 2022) → use mavenCentral, or gradle
+          # times out resolving transitive deps on a cold cache. See universal job for detail.
+          sed -i 's/jcenter()/mavenCentral()/g' ./flutter/android/build.gradle
           # bump gradle heap; use the debug signing slot for the gradle build (we re-sign after)
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
           # baked config (password + permissions + approve-mode) as a bundled asset
+          mkdir -p ./flutter/assets                       # tag may not ship this dir → mkdir before write
           echo -n '${{ env.CUSTOM_B64 }}' > ./flutter/assets/custom_.txt
           # native runtime libs
           mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi_dir }}
@@ -584,28 +588,56 @@ jobs:
 
       - name: Place native libs into jniLibs
         run: |
+          set -x
           J=./flutter/android/app/src/main/jniLibs
           mkdir -p "$J/arm64-v8a" "$J/armeabi-v7a" "$J/x86_64"
-          cp -v jnilibs/jnilibs-aarch64/* "$J/arm64-v8a/"
-          cp -v jnilibs/jnilibs-armv7/*   "$J/armeabi-v7a/"
-          cp -v jnilibs/jnilibs-x86_64/*  "$J/x86_64/"
-          echo "=== jniLibs contents ==="; find "$J" -type f
+          # IMPORTANT: copy ONLY librustdesk.so. The reused artifacts also contain
+          # libc++_shared.so, but Flutter's Android Gradle plugin bundles its OWN
+          # libc++_shared.so — placing a second copy here makes gradle fail with
+          # "N files found with path 'lib/<abi>/libc++_shared.so'" when it merges all
+          # 3 ABIs into one universal APK. (Per-ABI splits dodge this; the universal
+          # build is exactly where it breaks — the likely cause of this job failing.)
+          cp -v jnilibs/jnilibs-aarch64/librustdesk.so "$J/arm64-v8a/"
+          cp -v jnilibs/jnilibs-armv7/librustdesk.so   "$J/armeabi-v7a/"
+          cp -v jnilibs/jnilibs-x86_64/librustdesk.so  "$J/x86_64/"
+          echo "=== jniLibs contents (should be librustdesk.so only, no libc++_shared.so) ==="; find "$J" -type f
 
       - name: Build universal APK
         shell: bash
         env:
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
         run: |
+          set -x
           export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          # ROOT CAUSE of the universal-APK failure: RustDesk's flutter/android/build.gradle
+          # lists jcenter() as a repo. JCenter (bintray) was shut down + taken OFFLINE in 2022,
+          # so on a fresh runner gradle tries it first, times out, and the build dies with
+          # "Could not resolve ... jcenter.bintray.com ... Connect timed out" (seen for
+          # desktop_drop's kotlin-stdlib-jdk7 + flutter_embedding_release). Per-ABI jobs only
+          # survived by hitting the gradle cache. Replace the dead repo with mavenCentral().
+          sed -i 's/jcenter()/mavenCentral()/g' ./flutter/android/build.gradle
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+          # Belt-and-suspenders: even after trimming, resolve any duplicate native lib
+          # instead of failing the merge. Inject a packagingOptions block right after
+          # `android {` if one isn't already present. Syntax is AGP 7.3.1 / Groovy DSL
+          # (RustDesk uses AGP 7.3.1 + Gradle 7.6.4 — pickFirst as a string, not an array).
+          GRADLE=./flutter/android/app/build.gradle
+          if ! grep -q "libc++_shared.so" "$GRADLE"; then
+            awk '/^android \{/ && !done { print; print "    packagingOptions { jniLibs { pickFirst \"**/libc++_shared.so\" } }"; done=1; next } { print }' "$GRADLE" > "$GRADLE.tmp" && mv "$GRADLE.tmp" "$GRADLE"
+          fi
+          mkdir -p ./flutter/assets                       # tag may not ship this dir → mkdir before write
           echo -n '${{ env.CUSTOM_B64 }}' > ./flutter/assets/custom_.txt
+          echo "=== jniLibs present before build (all 3 ABIs must be here) ==="
+          find ./flutter/android/app/src/main/jniLibs -type f
           pushd flutter
-          flutter build apk --release            # no --split-per-abi → one APK, all ABIs
+          # no --split-per-abi → one APK, all ABIs. Let the real gradle error surface.
+          flutter build apk --release --verbose 2>&1 | tail -n 80
           popd
+          APK=./flutter/build/app/outputs/flutter-apk/app-release.apk
+          if [ ! -f "$APK" ]; then echo "::error::Universal APK not produced — see gradle output above."; exit 1; fi
           mkdir -p signed-apk
-          mv ./flutter/build/app/outputs/flutter-apk/app-release.apk \
-             ./signed-apk/${{ env.filename }}-${{ env.VERSION }}-universal.apk
+          mv "$APK" ./signed-apk/${{ env.filename }}-${{ env.VERSION }}-universal.apk
 
       - uses: r0adkll/sign-android-release@v1
         name: Sign APK
