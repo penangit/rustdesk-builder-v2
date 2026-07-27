@@ -1,5 +1,5 @@
 name: "🍎 Build macOS"
-run-name: "🍎 macOS · ${{ github.event.inputs.rustdesk_version || 'latest' }}"
+run-name: "🍎 macOS · ${{ inputs.rustdesk_version || 'latest' }}"
 
 on:
   workflow_dispatch:
@@ -14,6 +14,17 @@ on:
         default: "true"
         type: choice
         options: ["true", "false"]
+
+  workflow_call:
+    inputs:
+      rustdesk_version:
+        required: false
+        type: string
+        default: ""
+      force_build:
+        required: false
+        type: string
+        default: "true"
 
 env:
   RUST_VERSION: "1.75"           # for the bridge job
@@ -43,8 +54,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          MANUAL="${{ github.event.inputs.rustdesk_version }}"
-          FORCE="${{ github.event.inputs.force_build }}"
+          MANUAL="${{ inputs.rustdesk_version }}"
+          FORCE="${{ inputs.force_build }}"
           if [ -n "$MANUAL" ]; then
             echo "version=$MANUAL" >> $GITHUB_OUTPUT
             if [ "$FORCE" = "true" ]; then echo "should_build=true" >> $GITHUB_OUTPUT

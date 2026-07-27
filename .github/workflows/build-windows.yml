@@ -14,7 +14,7 @@
 #  from a future ...-i686.* 32-bit build.
 ###############################################################################
 name: "🪟 Build Windows (64-bit)"
-run-name: "🪟 Windows 64-bit · ${{ github.event.inputs.rustdesk_version || 'latest' }}"
+run-name: "🪟 Windows 64-bit · ${{ inputs.rustdesk_version || 'latest' }}"
 
 on:
   workflow_dispatch:
@@ -30,6 +30,17 @@ on:
         type: choice
         options: ["true", "false"]
 
+  workflow_call:
+    inputs:
+      rustdesk_version:
+        required: false
+        type: string
+        default: ""
+      force_build:
+        required: false
+        type: string
+        default: "true"
+
 env:
   RUST_VERSION: "1.75"
   FLUTTER_VERSION: "3.24.5"
@@ -40,6 +51,8 @@ env:
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
   CONFIG_PATH: configs/RustDesk.json
+  # optional Windows code-signing (leave unset to ship unsigned installers)
+  WINDOWS_PFX_BASE64: "${{ secrets.WINDOWS_PFX_BASE64 }}"
 
 jobs:
   # ─────────────────────────────────────────────────────────────────
@@ -54,8 +67,8 @@ jobs:
       - name: Resolve version
         id: resolve
         run: |
-          MANUAL="${{ github.event.inputs.rustdesk_version }}"
-          FORCE="${{ github.event.inputs.force_build }}"
+          MANUAL="${{ inputs.rustdesk_version }}"
+          FORCE="${{ inputs.force_build }}"
           if [ -n "$MANUAL" ]; then
             echo "version=$MANUAL" >> $GITHUB_OUTPUT
             if [ "$FORCE" = "true" ]; then
@@ -384,6 +397,23 @@ jobs:
           msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10
           Copy-Item ./Package/bin/x64/Release/en-us/Package.msi "../../SignOutput/${{ env.CUSTOM_FILENAME }}-${{ env.VERSION }}-x86_64.msi"
           popd
+
+      - name: Sign EXE + MSI (optional — only if WINDOWS_PFX_BASE64 secret is set)
+        if: env.WINDOWS_PFX_BASE64 != ''
+        working-directory: rustdesk
+        shell: pwsh
+        env:
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          $pfx = "$env:RUNNER_TEMP\cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found" }
+          Get-ChildItem ./SignOutput -Recurse -Include *.exe,*.msi | ForEach-Object {
+            Write-Host "Signing $($_.Name)"
+            & $signtool.FullName sign /f $pfx /p $env:WINDOWS_PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $_.FullName
+          }
+          Remove-Item $pfx -Force
 
       - name: List outputs
         working-directory: rustdesk

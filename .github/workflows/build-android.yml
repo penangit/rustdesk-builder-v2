@@ -17,7 +17,7 @@
 #  Only appropriate because these clients are for your own ir.remote-neo.com deployment.
 ###############################################################################
 name: "🤖 Build Android"
-run-name: "🤖 Android · ${{ github.event.inputs.rustdesk_version || 'latest' }}"
+run-name: "🤖 Android · ${{ inputs.rustdesk_version || 'latest' }}"
 
 on:
   workflow_dispatch:
@@ -32,6 +32,17 @@ on:
         default: "true"
         type: choice
         options: ["true", "false"]
+
+  workflow_call:
+    inputs:
+      rustdesk_version:
+        required: false
+        type: string
+        default: ""
+      force_build:
+        required: false
+        type: string
+        default: "true"
 
 env:
   RUST_VERSION: "1.75"
@@ -64,8 +75,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          MANUAL="${{ github.event.inputs.rustdesk_version }}"
-          FORCE="${{ github.event.inputs.force_build }}"
+          MANUAL="${{ inputs.rustdesk_version }}"
+          FORCE="${{ inputs.force_build }}"
           if [ -n "$MANUAL" ]; then
             echo "version=$MANUAL" >> $GITHUB_OUTPUT
             if [ "$FORCE" = "true" ]; then echo "should_build=true" >> $GITHUB_OUTPUT

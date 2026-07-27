@@ -1,0 +1,53 @@
+name: "🚀 Build All"
+run-name: "🚀 Build all · ${{ inputs.rustdesk_version || 'latest' }}"
+
+# Fires every platform in a single run. On a schedule it only builds when a NEW
+# stable RustDesk version is out (each build's detect-version step skips a version
+# that's already released), so daily runs are basically free when nothing changed.
+on:
+  schedule:
+    - cron: "0 6 * * *"        # daily at 06:00 UTC — change or remove as you like
+  workflow_dispatch:
+    inputs:
+      rustdesk_version:
+        description: "Version (blank = latest stable release)"
+        required: false
+        default: ""
+      force_build:
+        description: "Rebuild even if this version is already released"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      rustdesk_version: ${{ inputs.rustdesk_version || '' }}
+      force_build: ${{ inputs.force_build || 'false' }}
+    secrets: inherit
+
+  linux:
+    uses: ./.github/workflows/build-linux.yml
+    with:
+      rustdesk_version: ${{ inputs.rustdesk_version || '' }}
+      force_build: ${{ inputs.force_build || 'false' }}
+    secrets: inherit
+
+  android:
+    uses: ./.github/workflows/build-android.yml
+    with:
+      rustdesk_version: ${{ inputs.rustdesk_version || '' }}
+      force_build: ${{ inputs.force_build || 'false' }}
+    secrets: inherit
+
+  macos:
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      rustdesk_version: ${{ inputs.rustdesk_version || '' }}
+      force_build: ${{ inputs.force_build || 'false' }}
+    secrets: inherit
