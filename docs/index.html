@@ -311,7 +311,8 @@
       { label: 'x86_64', sub: 'Arch · zst',  icon: 'package', tip: 'Arch Linux, Manjaro, EndeavourOS — install with pacman.', match: n => /x86_64.*\.pkg\.tar\.zst$/i.test(n) },
     ]},
     { name: 'macOS', icon: 'apple', items: [
-      { label: 'x86_64', sub: 'DMG', icon: 'apple', tip: 'macOS on Intel (and Apple Silicon via Rosetta).', match: n => /x86_64.*\.dmg$/i.test(n) },
+      { label: 'Apple Silicon', sub: 'aarch64 · DMG', icon: 'apple', tip: 'Macs with M1/M2/M3/M4 — most Macs since ~2020.', match: n => /aarch64.*\.dmg$/i.test(n) },
+      { label: 'Intel',         sub: 'x86_64 · DMG',  icon: 'apple', tip: 'Intel-based Macs (2020 and earlier).', match: n => /x86_64.*\.dmg$/i.test(n) },
     ]},
   ];
 
