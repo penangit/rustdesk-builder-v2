@@ -591,16 +591,20 @@ jobs:
           set -x
           J=./flutter/android/app/src/main/jniLibs
           mkdir -p "$J/arm64-v8a" "$J/armeabi-v7a" "$J/x86_64"
-          # IMPORTANT: copy ONLY librustdesk.so. The reused artifacts also contain
-          # libc++_shared.so, but Flutter's Android Gradle plugin bundles its OWN
-          # libc++_shared.so — placing a second copy here makes gradle fail with
-          # "N files found with path 'lib/<abi>/libc++_shared.so'" when it merges all
-          # 3 ABIs into one universal APK. (Per-ABI splits dodge this; the universal
-          # build is exactly where it breaks — the likely cause of this job failing.)
-          cp -v jnilibs/jnilibs-aarch64/librustdesk.so "$J/arm64-v8a/"
-          cp -v jnilibs/jnilibs-armv7/librustdesk.so   "$J/armeabi-v7a/"
-          cp -v jnilibs/jnilibs-x86_64/librustdesk.so  "$J/x86_64/"
-          echo "=== jniLibs contents (should be librustdesk.so only, no libc++_shared.so) ==="; find "$J" -type f
+          # Copy BOTH libs per ABI, exactly like the per-arch job and upstream RustDesk's
+          # own universal build (flutter-build.yml). librustdesk.so is dynamically linked
+          # against libc++_shared.so (the C++ runtime) and cannot be dlopen()'d without it,
+          # so an APK missing libc++_shared.so CRASHES ON LAUNCH. There is NO duplicate to
+          # worry about here — nothing else in this project ships libc++_shared.so (the
+          # per-arch build proves it: it copies this same lib and builds with no merge
+          # error). The pickFirst block in the build step below is harmless insurance only.
+          cp -v jnilibs/jnilibs-aarch64/librustdesk.so   "$J/arm64-v8a/"
+          cp -v jnilibs/jnilibs-aarch64/libc++_shared.so "$J/arm64-v8a/"
+          cp -v jnilibs/jnilibs-armv7/librustdesk.so     "$J/armeabi-v7a/"
+          cp -v jnilibs/jnilibs-armv7/libc++_shared.so   "$J/armeabi-v7a/"
+          cp -v jnilibs/jnilibs-x86_64/librustdesk.so    "$J/x86_64/"
+          cp -v jnilibs/jnilibs-x86_64/libc++_shared.so  "$J/x86_64/"
+          echo "=== jniLibs contents (each ABI must have librustdesk.so AND libc++_shared.so) ==="; find "$J" -type f
 
       - name: Build universal APK
         shell: bash
