@@ -284,6 +284,11 @@ jobs:
           name: bridge-artifact
           path: ./
 
+      - name: Upgrade CMake
+        run: |
+          pip3 install --upgrade cmake
+          cmake --version
+          
       - name: Setup vcpkg with Github Actions binary cache
         uses: lukka/run-vcpkg@v11
         with:
