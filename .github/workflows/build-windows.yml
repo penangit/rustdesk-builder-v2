@@ -266,7 +266,14 @@ jobs:
         with:
           prefix-key: "windows-x64"
           workspaces: "rustdesk -> target"
-
+          
+      - name: Auto-detect vcpkg baseline
+        shell: bash
+        run: |
+          BASELINE=$(python3 -c "import json; print(json.load(open('rustdesk/vcpkg.json'))['vcpkg-configuration']['default-registry']['baseline'])")
+          echo "VCPKG_COMMIT_ID=$BASELINE" >> "$GITHUB_ENV"
+          echo "Using vcpkg baseline: $BASELINE"
+          
       # ── Step 3: vcpkg — run from rustdesk/ where vcpkg.json lives ──
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
