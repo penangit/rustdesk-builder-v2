@@ -248,6 +248,15 @@ jobs:
           ndk-version: ${{ env.NDK_VERSION }}
           add-to-path: true
 
+          
+      - name: Auto-detect vcpkg baseline
+        shell: bash
+        run: |
+          BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['vcpkg-configuration']['default-registry']['baseline'])")
+          echo "VCPKG_COMMIT_ID=$BASELINE" >> "$GITHUB_ENV"
+          echo "Using vcpkg baseline: $BASELINE"
+
+
       - name: Setup vcpkg with Github Actions binary cache
         uses: lukka/run-vcpkg@v11
         with:
