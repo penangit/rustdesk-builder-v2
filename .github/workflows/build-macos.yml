@@ -324,6 +324,14 @@ jobs:
           name: bridge-artifact
           path: ./
 
+      - name: Auto-detect vcpkg baseline
+        shell: bash
+        run: |
+          BASELINE=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['vcpkg-configuration']['default-registry']['baseline'])")
+          echo "VCPKG_COMMIT_ID=$BASELINE" >> "$GITHUB_ENV"
+          echo "Using vcpkg baseline: $BASELINE"
+          
+
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
